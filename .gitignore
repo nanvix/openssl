@@ -340,3 +340,6 @@ compile_commands.json
 .nanvix/sysroot/
 .nanvix/buildroot/
 .nanvix/__pycache__/
+
+# Release artifacts
+dist/

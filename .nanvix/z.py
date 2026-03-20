@@ -11,74 +11,91 @@ Usage (from repository root):
     ./z clean      # Remove build artifacts
 """
 
-from nanvix_zutil import CFG_GH_TOKEN, CFG_SYSROOT, EXIT_MISSING_DEP, Sysroot, ZScript, log
+from nanvix_zutil import CFG_GH_TOKEN, CFG_SYSROOT, CFG_TAG, CFG_TOOLCHAIN, EXIT_MISSING_DEP, Sysroot, ZScript, log
+
+# Makefile variable names (build-system-specific).
+_MAKE_VAR_CONFIG = "CONFIG_NANVIX"
+_MAKE_VAR_HOME = "NANVIX_HOME"
+_MAKE_VAR_TOOLCHAIN = "NANVIX_TOOLCHAIN"
+_MAKE_VAR_PLATFORM = "PLATFORM"
+_MAKE_VAR_PROCESS_MODE = "PROCESS_MODE"
+_MAKE_VAR_MEMORY_SIZE = "MEMORY_SIZE"
 
 
 class OpenSSLBuild(ZScript):
     """Build script for nanvix/openssl."""
 
-    def _make(self, *targets: str, extra_vars: dict[str, str] | None = None) -> None:
-        """Run ``make -f Makefile.nanvix`` with standard Nanvix variables."""
-        nanvix_sysroot = self.config.get(CFG_SYSROOT, "")
-        if not nanvix_sysroot:
+    NANVIX_TAG = "latest"
+
+    def _make_args(self, *targets: str) -> list[str]:
+        """Build the common make argument list."""
+        sysroot = self.config.get(CFG_SYSROOT, "")
+        if not sysroot:
             log.fatal(
                 f"{CFG_SYSROOT} is not set.",
                 code=EXIT_MISSING_DEP,
                 hint="Run `./z setup` first to download the sysroot.",
             )
+        toolchain = self.config.get(CFG_TOOLCHAIN, "/opt/nanvix")
 
-        cmd: list[str] = [
-            "make",
-            "-f",
-            "Makefile.nanvix",
-            f"CONFIG_NANVIX=y",
-            f"NANVIX_HOME={nanvix_sysroot}",
+        args = [
+            "make", "-f", "Makefile.nanvix",
+            f"{_MAKE_VAR_CONFIG}=y",
+            f"{_MAKE_VAR_HOME}={sysroot}",
+            f"{_MAKE_VAR_TOOLCHAIN}={toolchain}",
         ]
-        if extra_vars:
-            for key, val in extra_vars.items():
-                cmd.append(f"{key}={val}")
-        cmd.extend(targets)
-        self.run(*cmd, cwd=self.repo_root)
+
+        args.extend([
+            f"{_MAKE_VAR_PLATFORM}={self.config.machine}",
+            f"{_MAKE_VAR_PROCESS_MODE}={self.config.deployment_mode}",
+            f"{_MAKE_VAR_MEMORY_SIZE}={self.config.memory_size}",
+        ])
+
+        args.extend(targets)
+        return args
 
     def setup(self) -> None:
         """Download the Nanvix sysroot and persist its path."""
+        tag = self.config.get(CFG_TAG, self.NANVIX_TAG)
+        if not tag:
+            log.fatal(f"{CFG_TAG} is not set.", code=EXIT_MISSING_DEP)
+
         sysroot = Sysroot.download(
             machine=self.config.machine,
             deployment_mode=self.config.deployment_mode,
             memory_size=self.config.memory_size,
-            tag="latest",
+            tag=tag,
             gh_token=self.config.get(CFG_GH_TOKEN),
         )
-        sysroot.verify(list(self.SYSROOT_REQUIRED_FILES))
+        sysroot.verify(self.sysroot_required_files())
         self.config.set(CFG_SYSROOT, str(sysroot.path))
         self.config.save()
 
     def build(self) -> None:
         """Build libcrypto.a and libssl.a."""
-        self._make("all")
+        self.run(*self._make_args("all"), cwd=self.repo_root)
 
     def test(self) -> None:
-        """Run smoke, integration, and functional tests."""
-        platform_vars = {
-            "PLATFORM": self.config.machine,
-            "PROCESS_MODE": self.config.deployment_mode,
-            "MEMORY_SIZE": self.config.memory_size,
-        }
-        self._make("test", extra_vars=platform_vars)
+        """Run the OpenSSL test suite.
+
+        Without targets, runs the full suite (smoke + integration + functional).
+        With targets (e.g. ``./z test -- test-smoke test-integration``), passes
+        them directly to the Makefile.
+        """
+        targets = self.targets if self.targets else ["test"]
+        self.run(*self._make_args(*targets), cwd=self.repo_root)
 
     def release(self) -> None:
-        """Package the release tarball and verify it."""
-        platform_vars = {
-            "PLATFORM": self.config.machine,
-            "PROCESS_MODE": self.config.deployment_mode,
-            "MEMORY_SIZE": self.config.memory_size,
-        }
-        self._make("package", extra_vars=platform_vars)
-        self._make("verify-package", extra_vars=platform_vars)
+        """Package the OpenSSL release tarball and verify it."""
+        self.run(*self._make_args("package"), cwd=self.repo_root)
+        self.run(*self._make_args("verify-package"), cwd=self.repo_root)
 
     def clean(self) -> None:
         """Remove build artifacts."""
-        self.run("make", "-f", "Makefile.nanvix", "clean", cwd=self.repo_root)
+        self.run(
+            "make", "-f", "Makefile.nanvix", "clean",
+            cwd=self.repo_root,
+        )
 
 
 if __name__ == "__main__":
