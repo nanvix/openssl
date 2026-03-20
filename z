@@ -12,9 +12,9 @@ MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=12
 
 # nanvix-zutil release to install in the project venv.
-ZUTIL_TAG="v0.1.0"
+ZUTIL_TAG="v0.1.1"
 ZUTIL_RELEASE_BASE="https://github.com/nanvix/zutils/releases/download"
-ZUTIL_HASH="sha256:120d9bb4e409cf75ce823237812a414cd4ca90be8c421cad0c3583889a097497"
+ZUTIL_HASH="sha256:d22dffb2e4efd8d4514edd8101ea74f496aea4b6b7bde1c972dce799f230a881"
 
 # Locate a suitable Python interpreter.
 find_python() {
@@ -70,7 +70,13 @@ PYTHON=$(find_python) || {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 Z_SCRIPT="${SCRIPT_DIR}/.nanvix/z.py"
 VENV_DIR="${SCRIPT_DIR}/.nanvix/venv"
-VENV_PYTHON="${VENV_DIR}/bin/python"
+
+# Detect venv interpreter path (Scripts/python.exe on Windows/MSYS).
+if [[ -f "${VENV_DIR}/Scripts/python.exe" ]]; then
+    VENV_PYTHON="${VENV_DIR}/Scripts/python.exe"
+else
+    VENV_PYTHON="${VENV_DIR}/bin/python"
+fi
 
 if [[ ! -f "${Z_SCRIPT}" ]]; then
     echo "error: ${Z_SCRIPT} not found." >&2
@@ -83,6 +89,11 @@ if [[ ! -f "${VENV_PYTHON}" ]]; then
     echo "bootstrap: creating venv …" >&2
     run_python -m venv "${VENV_DIR}"
 
+    # Re-detect after venv creation.
+    if [[ -f "${VENV_DIR}/Scripts/python.exe" ]]; then
+        VENV_PYTHON="${VENV_DIR}/Scripts/python.exe"
+    fi
+
     if [[ -n "${NANVIX_ZUTIL_PATH:-}" ]]; then
         echo "bootstrap: installing nanvix-zutil (editable) …" >&2
         "${VENV_PYTHON}" -m pip install -q -e "${NANVIX_ZUTIL_PATH}"
@@ -93,9 +104,11 @@ if [[ ! -f "${VENV_PYTHON}" ]]; then
         whl_url="${ZUTIL_RELEASE_BASE}/${ZUTIL_TAG}/${whl_name}"
         echo "bootstrap: installing nanvix-zutil (${ZUTIL_TAG}) …" >&2
         tmp_req=$(mktemp)
+        trap 'rm -f "${tmp_req}"' EXIT
         echo "nanvix_zutil @ ${whl_url} --hash=${ZUTIL_HASH}" > "${tmp_req}"
         "${VENV_PYTHON}" -m pip install -q --require-hashes -r "${tmp_req}"
         rm -f "${tmp_req}"
+        trap - EXIT
     fi
 fi
 

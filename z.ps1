@@ -16,9 +16,9 @@ $MIN_MAJOR = 3
 $MIN_MINOR = 12
 
 # nanvix-zutil release to install in the project venv.
-$ZUTIL_TAG = "v0.1.0"
+$ZUTIL_TAG = "v0.1.1"
 $ZUTIL_RELEASE_BASE = "https://github.com/nanvix/zutils/releases/download"
-$ZUTIL_HASH = "sha256:120d9bb4e409cf75ce823237812a414cd4ca90be8c421cad0c3583889a097497"
+$ZUTIL_HASH = "sha256:d22dffb2e4efd8d4514edd8101ea74f496aea4b6b7bde1c972dce799f230a881"
 
 function Find-Python {
     # Prefer version-suffixed interpreters (e.g., python3.12, python3.13) first,
@@ -27,17 +27,13 @@ function Find-Python {
     for ($minor = 20; $minor -ge $MIN_MINOR; $minor--) {
         $candidates += "python3.$minor"
     }
-    $candidates += @("py", "python3", "python")
+    $candidates += @("python3", "python")
     foreach ($candidate in $candidates) {
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($null -eq $cmd) { continue }
 
-        # For 'py', pass -3 to select Python 3.
-        $pyArgs = if ($candidate -eq "py") { @("-3", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") } `
-                  else { @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") }
-
         try {
-            $version = & $candidate @pyArgs 2>$null
+            $version = & $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
             if ($LASTEXITCODE -ne 0) { continue }
             $parts = $version.Trim().Split(".")
             $major = [int]$parts[0]
@@ -49,17 +45,29 @@ function Find-Python {
             continue
         }
     }
+
+    # Windows 'py' launcher: probe specific minor versions (high to low).
+    $pyCmd = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($null -ne $pyCmd) {
+        for ($minor = 20; $minor -ge $MIN_MINOR; $minor--) {
+            try {
+                $exe = & py "-3.$minor" -c "import sys; print(sys.executable)" 2>$null
+                if ($LASTEXITCODE -eq 0 -and $exe) {
+                    return $exe.Trim()
+                }
+            } catch {
+                continue
+            }
+        }
+    }
+
     return $null
 }
 
-# Run the discovered Python interpreter (handles 'py -3' on Windows).
+# Run the discovered Python interpreter.
 function Invoke-Python {
     param([Parameter(ValueFromRemainingArguments)] [string[]]$Args_)
-    if ($python -eq "py") {
-        & $python -3 @Args_
-    } else {
-        & $python @Args_
-    }
+    & $python @Args_
 }
 
 $python = Find-Python

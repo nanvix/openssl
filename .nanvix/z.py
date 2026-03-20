@@ -17,9 +17,6 @@ from nanvix_zutil import CFG_GH_TOKEN, CFG_SYSROOT, Sysroot, ZScript, log
 class OpenSSLBuild(ZScript):
     """Build script for nanvix/openssl."""
 
-    # OpenSSL is standalone — only needs libposix.a from the sysroot.
-    SYSROOT_REQUIRED_FILES = ("lib/libposix.a",)
-
     def _make(self, *targets: str, extra_vars: dict[str, str] | None = None) -> None:
         """Run ``make -f Makefile.nanvix`` with standard Nanvix variables."""
         nanvix_sysroot = self.config.get(CFG_SYSROOT, "")
