@@ -63,7 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3 - --break-system-packages
+          apt-get update -qq && apt-get install -y -qq python3-pip
           ./z setup
 
       - name: Build
