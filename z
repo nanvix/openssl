@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Bootstrap wrapper for Nanvix build scripts.
+# Modeled on https://github.com/rust-lang/rust/blob/main/x
+
+# Copyright(c) The Maintainers of Nanvix.
+# Licensed under the MIT License.
+
+set -euo pipefail
+
+# Minimum required Python version.
+MIN_PYTHON_MAJOR=3
+MIN_PYTHON_MINOR=12
+
+# nanvix-zutil release to install in the project venv.
+ZUTIL_TAG="v0.1.0"
+ZUTIL_RELEASE_BASE="https://github.com/nanvix/zutils/releases/download"
+ZUTIL_HASH="sha256:120d9bb4e409cf75ce823237812a414cd4ca90be8c421cad0c3583889a097497"
+
+# Locate a suitable Python interpreter.
+find_python() {
+    # Prefer version-suffixed interpreters (e.g., python3.12, python3.13) first,
+    # then fall back to generic names.
+    local candidates=()
+    local minor
+    for ((minor=20; minor>=MIN_PYTHON_MINOR; minor--)); do
+        candidates+=("python3.${minor}")
+    done
+    candidates+=("python3" "python" "py")
+    for candidate in "${candidates[@]}"; do
+        if command -v "${candidate}" &>/dev/null; then
+            local version
+            if [[ "${candidate}" == "py" ]]; then
+                version=$("${candidate}" -3 -c \
+                    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" \
+                    2>/dev/null) || continue
+            else
+                version=$("${candidate}" -c \
+                    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" \
+                    2>/dev/null) || continue
+            fi
+            local major minor
+            major=$(echo "${version}" | tr -d '\r' | cut -d. -f1)
+            minor=$(echo "${version}" | tr -d '\r' | cut -d. -f2)
+            if [[ "${major}" -gt "${MIN_PYTHON_MAJOR}" ]] || \
+               [[ "${major}" -eq "${MIN_PYTHON_MAJOR}" && "${minor}" -ge "${MIN_PYTHON_MINOR}" ]]; then
+                echo "${candidate}"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# Run the discovered Python interpreter (handles 'py -3' on Windows).
+run_python() {
+    if [[ "${PYTHON}" == "py" ]]; then
+        "${PYTHON}" -3 "$@"
+    else
+        "${PYTHON}" "$@"
+    fi
+}
+
+PYTHON=$(find_python) || {
+    echo "error: Python ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+ not found in PATH." >&2
+    echo "hint:  Install Python 3.12+ and ensure it is on your PATH." >&2
+    exit 3
+}
+
+# Resolve the directory containing this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+Z_SCRIPT="${SCRIPT_DIR}/.nanvix/z.py"
+VENV_DIR="${SCRIPT_DIR}/.nanvix/venv"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+
+if [[ ! -f "${Z_SCRIPT}" ]]; then
+    echo "error: ${Z_SCRIPT} not found." >&2
+    echo "hint:  Create .nanvix/z.py with a ZScript subclass." >&2
+    exit 3
+fi
+
+# Bootstrap: create venv and install nanvix-zutil if needed.
+if [[ ! -f "${VENV_PYTHON}" ]]; then
+    echo "bootstrap: creating venv …" >&2
+    run_python -m venv "${VENV_DIR}"
+
+    if [[ -n "${NANVIX_ZUTIL_PATH:-}" ]]; then
+        echo "bootstrap: installing nanvix-zutil (editable) …" >&2
+        "${VENV_PYTHON}" -m pip install -q -e "${NANVIX_ZUTIL_PATH}"
+    else
+        version="${ZUTIL_TAG#v}"
+        version="${version//-/}"
+        whl_name="nanvix_zutil-${version}-py3-none-any.whl"
+        whl_url="${ZUTIL_RELEASE_BASE}/${ZUTIL_TAG}/${whl_name}"
+        echo "bootstrap: installing nanvix-zutil (${ZUTIL_TAG}) …" >&2
+        tmp_req=$(mktemp)
+        echo "nanvix_zutil @ ${whl_url} --hash=${ZUTIL_HASH}" > "${tmp_req}"
+        "${VENV_PYTHON}" -m pip install -q --require-hashes -r "${tmp_req}"
+        rm -f "${tmp_req}"
+    fi
+fi
+
+exec "${VENV_PYTHON}" "${Z_SCRIPT}" "$@"

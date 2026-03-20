@@ -332,3 +332,11 @@ compile_commands.json
 
 # Nanvix build marker
 .nanvix-configured
+
+# Nanvix build state (keep .nanvix/z.py tracked)
+.nanvix/venv/
+.nanvix/env.json
+.nanvix/cache/
+.nanvix/sysroot/
+.nanvix/buildroot/
+.nanvix/__pycache__/
