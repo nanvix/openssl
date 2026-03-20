@@ -11,7 +11,7 @@ Usage (from repository root):
     ./z clean      # Remove build artifacts
 """
 
-from nanvix_zutil import CFG_GH_TOKEN, CFG_SYSROOT, Sysroot, ZScript, log
+from nanvix_zutil import CFG_GH_TOKEN, CFG_SYSROOT, EXIT_MISSING_DEP, Sysroot, ZScript, log
 
 
 class OpenSSLBuild(ZScript):
@@ -23,7 +23,7 @@ class OpenSSLBuild(ZScript):
         if not nanvix_sysroot:
             log.fatal(
                 f"{CFG_SYSROOT} is not set.",
-                code=3,
+                code=EXIT_MISSING_DEP,
                 hint="Run `./z setup` first to download the sysroot.",
             )
 
