@@ -332,3 +332,13 @@ compile_commands.json
 
 # Nanvix build marker
 .nanvix-configured
+
+# Nanvix build artifacts (not tracked)
+.nanvix/venv/
+.nanvix/__pycache__/
+.nanvix/cache/
+.nanvix/sysroot/
+.nanvix/env.json
+.nanvix/*.tar.bz2
+openssl_nanvix_test.elf
+openssl_nanvix_test.c

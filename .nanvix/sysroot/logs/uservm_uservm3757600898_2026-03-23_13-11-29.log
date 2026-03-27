@@ -1,5 +1,0 @@
-[2026-03-23 13:11:29.689707 -05:00] [38;5;196mERROR[0m [hyperlight_host::sandbox::outb] /root/.cargo/git/checkouts/hyperlight-b61aac5ee580a392/fd41035/src/hyperlight_host/src/sandbox/outb.rs:149: error=GuestAborted(0, "")
-[2026-03-23 13:11:29.690458 -05:00] [38;5;196mERROR[0m [hyperlight_host::hypervisor::hyperlight_vm] /root/.cargo/git/checkouts/hyperlight-b61aac5ee580a392/fd41035/src/hyperlight_host/src/hypervisor/hyperlight_vm.rs:213: error=GuestAborted(0, "")
-[2026-03-23 13:11:29.742845 -05:00] [38;5;196mERROR[0m [hyperlight_host::sandbox::uninitialized_evolve] /root/.cargo/git/checkouts/hyperlight-b61aac5ee580a392/fd41035/src/hyperlight_host/src/sandbox/uninitialized_evolve.rs:43: error=GuestAborted(0, "")
-[2026-03-23 13:11:29.742880 -05:00] [38;5;196mERROR[0m [hyperlight_host::sandbox::uninitialized] /root/.cargo/git/checkouts/hyperlight-b61aac5ee580a392/fd41035/src/hyperlight_host/src/sandbox/uninitialized.rs:261: error=GuestAborted(0, "")
-[2026-03-23 13:11:29.742914 -05:00] [38;5;196mERROR[0m [uservm::orchestrator] src/uservm/src/orchestrator.rs:285: try_receive_from_io_thread(): disconnected from the input control command channel

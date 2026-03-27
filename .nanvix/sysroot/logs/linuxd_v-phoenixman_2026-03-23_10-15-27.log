@@ -1,1 +1,0 @@
-[2026-03-23 10:15:27.207121 -05:00] [38;5;196mERROR[0m [syscomm::socket_stream_reader] src/libs/syscomm/src/socket_stream_reader.rs:118: read_exact(): read_exact(): early eof
