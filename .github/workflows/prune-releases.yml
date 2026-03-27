@@ -1,0 +1,35 @@
+name: Prune Releases
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    if: github.repository == 'nanvix/openssl'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          CUTOFF=$(date -u -d "90 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          TAG_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+-nanvix-([0-9]+\.[0-9]+\.[0-9]+|[a-f0-9]{7})$'
+
+          echo "Pruning releases older than ${CUTOFF} matching pattern ${TAG_PATTERN}"
+
+          gh release list --repo "$REPO" --limit 200 --json tagName,publishedAt \
+            | jq -r --arg cutoff "$CUTOFF" --arg pattern "$TAG_PATTERN" \
+              '.[] | select(.publishedAt < $cutoff) | select(.tagName | test($pattern)) | .tagName' \
+            | while read -r tag; do
+                echo "Pruning release: $tag"
+                RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${tag}" --jq '.id' 2>/dev/null) || continue
+                gh api "repos/${REPO}/releases/${RELEASE_ID}" -X DELETE || true
+                gh api "repos/${REPO}/git/refs/tags/${tag}" -X DELETE 2>/dev/null || true
+              done

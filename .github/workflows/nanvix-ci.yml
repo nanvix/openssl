@@ -26,39 +26,29 @@ jobs:
   get-nanvix-info:
     runs-on: ubuntu-latest
     outputs:
-      sha: ${{ steps.extract.outputs.sha }}
-      sha_full: ${{ steps.extract.outputs.sha_full }}
+      nanvix_tag: ${{ steps.resolve.outputs.nanvix_tag }}
+      nanvix_sha: ${{ steps.resolve.outputs.nanvix_sha }}
+      nanvix_version: ${{ steps.resolve.outputs.nanvix_version }}
+      package_name: ${{ steps.resolve.outputs.package_name }}
+      package_version: ${{ steps.resolve.outputs.package_version }}
     steps:
-      - name: Download Nanvix Release Artifacts
-        id: extract
+      - uses: actions/checkout@v4
+
+      - name: Install nanvix-zutil
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          # Download all Nanvix release artifacts (authenticated to avoid API rate limits)
-          curl -fsSL https://raw.githubusercontent.com/nanvix/nanvix/refs/heads/dev/scripts/get-nanvix.sh | bash -s -- --force nanvix-artifacts
-          # Find any artifact to extract the SHA
-          ARTIFACT_FILE=$(find nanvix-artifacts -maxdepth 1 -type f -name "*.tar.bz2" | head -1)
-          if [[ -z "$ARTIFACT_FILE" ]]; then
-            echo "::error::No Nanvix artifact found"
-            exit 1
-          fi
-          # Extract Nanvix commit SHA from artifact filename
-          NANVIX_SHA_FULL=$(basename "$ARTIFACT_FILE" | sed -E 's/.*-([a-f0-9]{40})\.tar\.bz2$/\1/')
-          NANVIX_SHA="${NANVIX_SHA_FULL::7}"
-          echo "Nanvix commit SHA: $NANVIX_SHA_FULL (short: $NANVIX_SHA)"
-          echo "sha=$NANVIX_SHA" >> "$GITHUB_OUTPUT"
-          echo "sha_full=$NANVIX_SHA_FULL" >> "$GITHUB_OUTPUT"
+          WHEEL_URL=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/nanvix/zutils/releases/latest \
+            | python3 -c "import json,sys; assets=json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].endswith('.whl')))")
+          python3 -m pip install "$WHEEL_URL"
 
-      - name: Upload Nanvix Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nanvix-release-artifacts
-          path: nanvix-artifacts/*.tar.bz2
-          retention-days: 1
+      - name: Resolve Nanvix info
+        id: resolve
+        run: nanvix-zutil resolve >> "$GITHUB_OUTPUT"
 
   build:
-    needs: get-nanvix-info
+    needs: [get-nanvix-info]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -74,90 +64,70 @@ jobs:
       run:
         shell: bash
     env:
-      NANVIX_SHA: ${{ needs.get-nanvix-info.outputs.sha }}
-      NANVIX_SHA_FULL: ${{ needs.get-nanvix-info.outputs.sha_full }}
+      NANVIX_MACHINE: ${{ matrix.platform }}
+      NANVIX_DEPLOYMENT_MODE: ${{ matrix.process-mode }}
+      NANVIX_MEMORY_SIZE: ${{ matrix.memory }}
       USER: runner
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Nanvix Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: nanvix-release-artifacts
-          path: nanvix-artifacts
-
-      - name: Extract Nanvix Release
+      - name: Install nanvix-zutil
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          # Find and extract the artifact matching platform and process-mode
-          ARTIFACT_PATTERN="${{ matrix.platform }}.*${{ matrix.process-mode }}.*${{ matrix.memory }}.*\.tar\.bz2"
-          ARTIFACT_FILE=$(find nanvix-artifacts -maxdepth 1 -type f -name "*.tar.bz2" | grep -E "$ARTIFACT_PATTERN" | head -1)
-          if [[ -z "$ARTIFACT_FILE" ]]; then
-            echo "::error::No ${{ matrix.platform }} ${{ matrix.process-mode }} artifact found"
-            exit 1
-          fi
-          mkdir -p nanvix-artifacts/extracted
-          tar -xjf "$ARTIFACT_FILE" -C nanvix-artifacts/extracted
-          NANVIX_HOME=$(find nanvix-artifacts/extracted -maxdepth 2 -type d -name "bin" -exec dirname {} \; | head -1)
-          mkdir -p "$NANVIX_HOME/include"
-          echo "NANVIX_HOME=$NANVIX_HOME" >> "$GITHUB_ENV"
+          python3 -m venv /tmp/zutil-venv
+          WHEEL_URL=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/nanvix/zutils/releases/latest \
+            | python3 -c "import json,sys; assets=json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].endswith('.whl')))")
+          /tmp/zutil-venv/bin/pip install "$WHEEL_URL"
+          ln -sf /tmp/zutil-venv/bin/nanvix-zutil /usr/local/bin/nanvix-zutil
+
+      - name: Setup
+        run: nanvix-zutil setup
 
       - name: Build
-        run: |
-          make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" \
-            INSTALL_PREFIX="/sysroot" all
+        run: nanvix-zutil build
 
-      - name: Smoke Tests
-        run: |
-          make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" test-smoke
-
-      - name: Integration Tests
-        run: |
-          make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" test-integration
-
-      - name: Functional Tests
+      - name: Test
         if: matrix.process-mode != 'standalone'
-        run: |
-          timeout --foreground 300 make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" \
-            PROCESS_MODE="${{ matrix.process-mode }}" test-functional
+        run: nanvix-zutil test
 
-      - name: Package
-        run: |
-          make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" \
-            INSTALL_PREFIX="/sysroot" \
-            PLATFORM="${{ matrix.platform }}" PROCESS_MODE="${{ matrix.process-mode }}" \
-            MEMORY_SIZE="${{ matrix.memory }}" \
-            package
-          ARTIFACT_NAME="openssl-${{ matrix.platform }}-${{ matrix.process-mode }}-${{ matrix.memory }}"
-          echo "ARTIFACT_TARBALL=dist/${ARTIFACT_NAME}.tar.bz2" >> "$GITHUB_ENV"
+      - name: Test (standalone — smoke + integration only)
+        if: matrix.process-mode == 'standalone'
+        run: nanvix-zutil test -- test-smoke test-integration
 
-      - name: Verify Package
-        run: |
-          make -f Makefile.nanvix CONFIG_NANVIX=y \
-            NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="/opt/nanvix" \
-            PLATFORM="${{ matrix.platform }}" PROCESS_MODE="${{ matrix.process-mode }}" \
-            MEMORY_SIZE="${{ matrix.memory }}" \
-            verify-package
+      - name: Release
+        if: success()
+        run: nanvix-zutil release
 
       - name: Upload Build Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: openssl-${{ matrix.platform }}-${{ matrix.process-mode }}-${{ matrix.memory }}
-          path: ${{ env.ARTIFACT_TARBALL }}
+          path: dist/*.tar.bz2
           retention-days: 7
+
+      - name: Collect failure logs
+        if: failure()
+        run: |
+          mkdir -p ci-logs
+          cp -f /tmp/*.log ci-logs/ 2>/dev/null || true
+          find .nanvix -type f -name "*.log" -exec cp -f {} ci-logs/ \; 2>/dev/null || true
+          ls -lah ci-logs || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ matrix.platform }}-${{ matrix.process-mode }}
+          path: ci-logs/*
+          if-no-files-found: warn
 
   release:
     needs: [get-nanvix-info, build]
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    env:
-      NANVIX_SHA: ${{ needs.get-nanvix-info.outputs.sha }}
-      NANVIX_SHA_FULL: ${{ needs.get-nanvix-info.outputs.sha_full }}
     steps:
       - uses: actions/checkout@v4
 
@@ -185,67 +155,81 @@ jobs:
           fi
           ls -la release-assets/
 
-      - name: Get Nanvix Release Info
-        id: nanvix-release
+      - name: Generate Lockfile
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          API_URL="https://api.github.com/repos/nanvix/nanvix/releases/tags/latest"
-          RELEASE_INFO=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" "$API_URL")
-          NANVIX_NAME=$(echo "$RELEASE_INFO" | jq -r '.name // "latest"')
-          NANVIX_PUBLISHED=$(echo "$RELEASE_INFO" | jq -r '.published_at')
-          echo "name=${NANVIX_NAME}" >> "$GITHUB_OUTPUT"
-          echo "published=${NANVIX_PUBLISHED}" >> "$GITHUB_OUTPUT"
+          WHEEL_URL=$(curl -fsSL -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/nanvix/zutils/releases/latest \
+            | python3 -c "import json,sys; assets=json.load(sys.stdin)['assets']; print(next(a['browser_download_url'] for a in assets if a['name'].endswith('.whl')))")
+          python3 -m pip install "$WHEEL_URL"
+          nanvix-zutil resolve
+          nanvix-zutil lock --shallow
+          cp .nanvix/nanvix.lock release-assets/
 
-      - name: Create Latest Release
+      - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NANVIX_NAME: ${{ steps.nanvix-release.outputs.name }}
-          NANVIX_PUBLISHED: ${{ steps.nanvix-release.outputs.published }}
+          OPENSSL_VERSION: ${{ needs.get-nanvix-info.outputs.package_version }}
+          NANVIX_VERSION: ${{ needs.get-nanvix-info.outputs.nanvix_version }}
+          NANVIX_SHA: ${{ needs.get-nanvix-info.outputs.nanvix_sha }}
         run: |
-          RELEASE_TAG="${GITHUB_SHA::7}-nanvix-${NANVIX_SHA}"
+          RELEASE_TAG="${OPENSSL_VERSION}-nanvix-${NANVIX_VERSION}"
           if gh release view "$RELEASE_TAG" &>/dev/null; then
-            gh release delete "$RELEASE_TAG" --yes --cleanup-tag || true
-          fi
-          gh release create "$RELEASE_TAG" \
-            --title "Build ${GITHUB_SHA::7}" \
-            --notes "Automated build from branch ${{ github.ref_name }} at commit ${{ github.sha }}.
+            echo "Release ${RELEASE_TAG} already exists — skipping creation"
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "openssl ${OPENSSL_VERSION} (Nanvix ${NANVIX_VERSION})" \
+              --notes "Automated build from branch ${{ github.ref_name }} at commit ${{ github.sha }}.
 
           **Build Information:**
           - Workflow Run: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           - Commit: [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
           - Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
-          **Nanvix Release:**
-          - Name: ${NANVIX_NAME}
-          - Published: ${NANVIX_PUBLISHED}
-          - Commit: [${NANVIX_SHA_FULL}](https://github.com/nanvix/nanvix/commit/${NANVIX_SHA_FULL})
+          **Nanvix Version:** ${NANVIX_VERSION}
 
           **Package Layout:**
           \`\`\`
           sysroot/
-            lib/{libcrypto.a,libssl.a}
-            include/openssl/{ssl.h,evp.h,...}
+            lib/{libcrypto.a, libssl.a}
+            include/openssl/{ssl.h, evp.h, opensslv.h, ...}
             bin/openssl_nanvix_test.elf
           \`\`\`
 
           **Dependencies:** None (standalone library)" \
-            --latest \
-            release-assets/*.tar.bz2
+              --latest \
+              release-assets/*.tar.bz2 release-assets/nanvix.lock
+          fi
+
+      - name: Create Commitish Tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENSSL_VERSION: ${{ needs.get-nanvix-info.outputs.package_version }}
+          NANVIX_SHA: ${{ needs.get-nanvix-info.outputs.nanvix_sha }}
+        run: |
+          COMMITISH_TAG="${OPENSSL_VERSION}-nanvix-${NANVIX_SHA}"
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -X POST \
+            -f "ref=refs/tags/${COMMITISH_TAG}" \
+            -f "sha=${{ github.sha }}" || echo "::warning::Commitish tag ${COMMITISH_TAG} already exists"
 
       - name: Trigger Dependent Workflows
         if: success()
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          OPENSSL_VERSION: ${{ needs.get-nanvix-info.outputs.package_version }}
+          NANVIX_VERSION: ${{ needs.get-nanvix-info.outputs.nanvix_version }}
+          NANVIX_SHA: ${{ needs.get-nanvix-info.outputs.nanvix_sha }}
         run: |
-          RELEASE_TAG="${GITHUB_SHA::7}-nanvix-${NANVIX_SHA}"
+          RELEASE_TAG="${OPENSSL_VERSION}-nanvix-${NANVIX_VERSION}"
           echo "Triggering cpython workflow..."
           gh api repos/nanvix/cpython/dispatches \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -f event_type="openssl-release" \
             -f "client_payload[nanvix_sha]=${NANVIX_SHA}" \
+            -f "client_payload[nanvix_version]=${NANVIX_VERSION}" \
             -f "client_payload[openssl_tag]=${RELEASE_TAG}" || echo "::warning::Failed to trigger cpython workflow"
 
   report-failure:
@@ -253,14 +237,14 @@ jobs:
     if: >-
       ${{ always() &&
           (github.event_name == 'repository_dispatch' || github.event_name == 'schedule' || github.event_name == 'push') &&
-          needs.build.result == 'failure' &&
-          needs.release.result == 'failure' }}
+          (needs.build.result == 'failure' || needs.release.result == 'failure') }}
     runs-on: ubuntu-latest
     steps:
       - name: Report failure issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -274,6 +258,7 @@ jobs:
               `- Run: [#${context.runNumber}](${runUrl})`,
               `- SHA: ${context.sha}`,
               `- build: ${process.env.BUILD_RESULT}`,
+              `- release: ${process.env.RELEASE_RESULT}`,
               '',
               'Please investigate and take any corrective actions.'
             ].join('\n');
@@ -286,11 +271,11 @@ jobs:
             if (existing) {
               await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
               const currentAssignees = existing.assignees.map(a => a.login);
-              const desired = ['ppenna', 'danbugs'];
+              const desired = ['ppenna'];
               const missing = desired.filter(a => !currentAssignees.includes(a));
               if (missing.length > 0) {
                 await github.rest.issues.addAssignees({ owner, repo, issue_number: existing.number, assignees: missing });
               }
             } else {
-              await github.rest.issues.create({ owner, repo, title, body, assignees: ['ppenna', 'danbugs'] });
+              await github.rest.issues.create({ owner, repo, title, body, assignees: ['ppenna'] });
             }
