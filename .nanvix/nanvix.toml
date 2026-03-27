@@ -1,0 +1,6 @@
+manifest-version = "0.1.0"
+
+[package]
+name = "openssl"
+version = "3.5.0"
+nanvix-version = "latest"
