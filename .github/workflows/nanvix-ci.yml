@@ -11,8 +11,6 @@ on:
   pull_request:
     branches: ["nanvix/**"]
   workflow_dispatch:
-  repository_dispatch:
-    types: [nanvix-minor-release, nanvix-major-release]
 
 permissions:
   contents: write
@@ -21,15 +19,13 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name || github.ref || 'default' }}
-  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
+  cancel-in-progress: true
 
 jobs:
   ci:
-    uses: nanvix/workflows/.github/workflows/nanvix-ci.yml@v1.0.0
+    uses: nanvix/workflows/.github/workflows/nanvix-ci.yml@v1.2.0
     with:
-      zutil-version: "v0.4.0"
+      zutil-version: "v0.4.2"
       caller-event-name: ${{ github.event_name }}
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-
-
