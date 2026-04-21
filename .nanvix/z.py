@@ -116,16 +116,28 @@ class OpenSSLBuild(ZScript):
             name = binary.stem
             print(f"RUN  {name}...")
             with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
-                ramfs_dir = Path(tmpdir)
+                tmpdir_path = Path(tmpdir)
+                ramfs_dir = tmpdir_path / "ramfs"
+                ramfs_dir.mkdir()
                 (ramfs_dir / "tmp").mkdir(exist_ok=True)
                 shutil.copy2(binary, ramfs_dir / binary.name)
-                # Write ramfs image outside the source dir to avoid self-inclusion.
-                ramfs_img = ramfs_dir.parent / f"rootfs_{name}.img"
+                # Write ramfs image alongside the ramfs source dir to avoid
+                # self-inclusion while keeping artifacts scoped to this temp dir.
+                ramfs_img = tmpdir_path / f"rootfs_{name}.img"
                 try:
                     subprocess.run(
                         [str(mkramfs.resolve()), "-o", str(ramfs_img), str(ramfs_dir)],
-                        check=True,
+                        check=True, timeout=60,
                     )
+                except subprocess.CalledProcessError as e:
+                    print(f"FAIL {name} (mkramfs exit code {e.returncode})")
+                    failed.append(name)
+                    continue
+                except subprocess.TimeoutExpired:
+                    print(f"FAIL {name} (mkramfs timeout)")
+                    failed.append(name)
+                    continue
+                try:
                     result = subprocess.run(
                         [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
                          "-ramfs", str(ramfs_img), "--", f"./{binary.name}"],
@@ -139,8 +151,6 @@ class OpenSSLBuild(ZScript):
                 except subprocess.TimeoutExpired:
                     print(f"FAIL {name} (timeout)")
                     failed.append(name)
-                finally:
-                    ramfs_img.unlink(missing_ok=True)
 
         if failed:
             msg = " ".join(failed)
