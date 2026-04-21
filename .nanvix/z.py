@@ -78,7 +78,7 @@ class OpenSSLBuild(ZScript):
     def test(self) -> None:
         """Run the test suite.
 
-        On Linux, delegates to the Makefile (smoke + integration + functional).
+        On non-Windows, delegates to the Makefile (smoke + integration + functional).
         On Windows, runs test binaries from build/ via nanvixd.exe natively,
         following the same pattern as posix-tests and cpython.
         """
@@ -98,6 +98,8 @@ class OpenSSLBuild(ZScript):
         mkramfs = sysroot_path / "bin" / "mkramfs.exe"
         if not nanvixd.is_file():
             log.fatal("nanvixd.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+        if not mkramfs.is_file():
+            log.fatal("mkramfs.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
 
         build_dir = self.repo_root / "build"
         test_binaries = sorted(build_dir.glob("*.elf")) if build_dir.is_dir() else []
@@ -113,30 +115,32 @@ class OpenSSLBuild(ZScript):
         for binary in test_binaries:
             name = binary.stem
             print(f"RUN  {name}...")
-            ramfs_dir = Path(tempfile.mkdtemp(prefix=f"nanvix_{name}_"))
-            (ramfs_dir / "tmp").mkdir(exist_ok=True)
-            shutil.copy2(binary, ramfs_dir / binary.name)
-            ramfs_img = ramfs_dir / "rootfs.img"
-            subprocess.run(
-                [str(mkramfs.resolve()), "-o", str(ramfs_img), str(ramfs_dir)],
-                check=True, capture_output=True,
-            )
-            try:
-                result = subprocess.run(
-                    [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
-                     "-ramfs", str(ramfs_img), "--", str(binary.name)],
-                    stdin=subprocess.DEVNULL, timeout=120,
-                )
-                if result.returncode != 0:
-                    print(f"FAIL {name} (exit code {result.returncode})")
+            with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
+                ramfs_dir = Path(tmpdir)
+                (ramfs_dir / "tmp").mkdir(exist_ok=True)
+                shutil.copy2(binary, ramfs_dir / binary.name)
+                # Write ramfs image outside the source dir to avoid self-inclusion.
+                ramfs_img = ramfs_dir.parent / f"rootfs_{name}.img"
+                try:
+                    subprocess.run(
+                        [str(mkramfs.resolve()), "-o", str(ramfs_img), str(ramfs_dir)],
+                        check=True,
+                    )
+                    result = subprocess.run(
+                        [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
+                         "-ramfs", str(ramfs_img), "--", f"./{binary.name}"],
+                        stdin=subprocess.DEVNULL, timeout=120,
+                    )
+                    if result.returncode != 0:
+                        print(f"FAIL {name} (exit code {result.returncode})")
+                        failed.append(name)
+                    else:
+                        print(f"OK   {name}")
+                except subprocess.TimeoutExpired:
+                    print(f"FAIL {name} (timeout)")
                     failed.append(name)
-                else:
-                    print(f"OK   {name}")
-            except subprocess.TimeoutExpired:
-                print(f"FAIL {name} (timeout)")
-                failed.append(name)
-            finally:
-                shutil.rmtree(ramfs_dir, ignore_errors=True)
+                finally:
+                    ramfs_img.unlink(missing_ok=True)
 
         if failed:
             msg = " ".join(failed)
