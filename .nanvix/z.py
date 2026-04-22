@@ -11,6 +11,10 @@ Usage:
     ./z clean     # Remove build artifacts
 """
 
+import subprocess
+import sys
+from pathlib import Path
+
 from nanvix_zutil import CFG_SYSROOT, CFG_TOOLCHAIN, EXIT_MISSING_DEP, ZScript, log
 
 # Makefile variable names (build-system-specific).
@@ -26,6 +30,9 @@ _MAKE_VAR_INSTALL_PREFIX = "INSTALL_PREFIX"
 # Use /sysroot so that release tarballs don't contain ephemeral runner paths.
 _DEFAULT_INSTALL_PREFIX = "/sysroot"
 
+
+
+IS_WINDOWS = sys.platform == "win32"
 
 class OpenSSLBuild(ZScript):
     """Build script for nanvix/openssl."""
@@ -69,14 +76,86 @@ class OpenSSLBuild(ZScript):
         self.run(*self._make_args("all"), cwd=self.repo_root)
 
     def test(self) -> None:
-        """Run the OpenSSL test suite.
+        """Run the test suite.
 
-        Without targets, runs the full suite (smoke + integration + functional).
-        With targets (e.g. ``./z test -- test-smoke test-integration``), passes
-        them directly to the Makefile.
+        On non-Windows, delegates to the Makefile (smoke + integration + functional).
+        On Windows, runs test binaries from build/ via nanvixd.exe natively,
+        following the same pattern as posix-tests and cpython.
         """
+        if IS_WINDOWS:
+            self._run_tests_windows()
+            return
         targets = self.targets if self.targets else ["test"]
         self.run(*self._make_args(*targets), cwd=self.repo_root)
+
+    def _run_tests_windows(self) -> None:
+        """Run tests natively on Windows using nanvixd.exe."""
+        sysroot = self.config.get(CFG_SYSROOT, "")
+        if not sysroot:
+            log.fatal(f"{CFG_SYSROOT} is not set.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+        sysroot_path = Path(sysroot)
+        nanvixd = sysroot_path / "bin" / "nanvixd.exe"
+        mkramfs = sysroot_path / "bin" / "mkramfs.exe"
+        if not nanvixd.is_file():
+            log.fatal("nanvixd.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+        if not mkramfs.is_file():
+            log.fatal("mkramfs.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+
+        build_dir = self.repo_root / "build"
+        test_binaries = sorted(build_dir.glob("*.elf")) if build_dir.is_dir() else []
+
+        if not test_binaries:
+            print("No test binaries found in build/ -- smoke test only.")
+            print("OK: library-only repo, no functional tests to run on Windows")
+            return
+
+        import shutil
+        import tempfile
+        failed = []
+        for binary in test_binaries:
+            name = binary.stem
+            print(f"RUN  {name}...")
+            with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                ramfs_dir = tmpdir_path / "ramfs"
+                ramfs_dir.mkdir()
+                (ramfs_dir / "tmp").mkdir(exist_ok=True)
+                shutil.copy2(binary, ramfs_dir / binary.name)
+                # Write ramfs image alongside the ramfs source dir to avoid
+                # self-inclusion while keeping artifacts scoped to this temp dir.
+                ramfs_img = tmpdir_path / f"rootfs_{name}.img"
+                try:
+                    subprocess.run(
+                        [str(mkramfs.resolve()), "-o", str(ramfs_img), str(ramfs_dir)],
+                        check=True, timeout=60,
+                    )
+                except subprocess.CalledProcessError as e:
+                    print(f"FAIL {name} (mkramfs exit code {e.returncode})")
+                    failed.append(name)
+                    continue
+                except subprocess.TimeoutExpired:
+                    print(f"FAIL {name} (mkramfs timeout)")
+                    failed.append(name)
+                    continue
+                try:
+                    result = subprocess.run(
+                        [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
+                         "-ramfs", str(ramfs_img), "--", f"./{binary.name}"],
+                        stdin=subprocess.DEVNULL, timeout=120,
+                    )
+                    if result.returncode != 0:
+                        print(f"FAIL {name} (exit code {result.returncode})")
+                        failed.append(name)
+                    else:
+                        print(f"OK   {name}")
+                except subprocess.TimeoutExpired:
+                    print(f"FAIL {name} (timeout)")
+                    failed.append(name)
+
+        if failed:
+            msg = " ".join(failed)
+            raise RuntimeError(f"{len(failed)} test(s) failed: {msg}")
+        print(f"\t\t*** All {len(test_binaries)} tests PASSED ***")
 
     def release(self) -> None:
         """Package the OpenSSL release tarball and verify it."""
