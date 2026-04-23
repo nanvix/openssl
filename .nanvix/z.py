@@ -47,12 +47,14 @@ class OpenSSLBuild(ZScript):
                 hint="Run `./z setup` first to download the sysroot.",
             )
         toolchain = self.config.get(CFG_TOOLCHAIN, "/opt/nanvix")
+        sysroot_p = self.translate_path(Path(sysroot))
+        toolchain_p = self.translate_path(Path(toolchain))
 
         args = [
             "make", "-f", "Makefile.nanvix",
             f"{_MAKE_VAR_CONFIG}=y",
-            f"{_MAKE_VAR_HOME}={sysroot}",
-            f"{_MAKE_VAR_TOOLCHAIN}={toolchain}",
+            f"{_MAKE_VAR_HOME}={sysroot_p}",
+            f"{_MAKE_VAR_TOOLCHAIN}={toolchain_p}",
         ]
 
         args.extend([
