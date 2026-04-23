@@ -209,7 +209,7 @@ $(TEST_SRC):
 	  '}' > $@
 
 # Build the test program
-$(TEST_ELF): $(TEST_SRC) build
+$(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a
 ifdef CONFIG_NANVIX_DOCKER
 	$(DOCKER_RUN) $(DOCKER_TOOLCHAIN_PATH)/bin/i686-nanvix-gcc -O2 \
 	  -I$(DOCKER_WORKSPACE_PATH)/include \
@@ -227,7 +227,7 @@ else
 endif
 
 # --- Smoke tests: verify build artifacts (no runtime needed) ---
-test-smoke: build
+test-smoke:
 	@echo "=== openssl smoke tests ==="
 	@echo "  Checking libcrypto.a..."
 	@test -f libcrypto.a || { echo "  FAIL: libcrypto.a not found"; exit 1; }
