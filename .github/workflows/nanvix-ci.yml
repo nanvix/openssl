@@ -30,6 +30,7 @@ jobs:
       zutil-version: "v0.7.26"
       memory-sizes: '["128mb","256mb"]'
       caller-event-name: ${{ github.event_name }}
+      windows-test: true
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -46,6 +47,7 @@ jobs:
       zutil-version: "v0.7.26"
       memory-sizes: '["128mb","256mb"]'
       caller-event-name: 'schedule'
+      windows-test: true
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
       DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
