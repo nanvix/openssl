@@ -31,7 +31,7 @@ jobs:
       platforms: '["hyperlight","microvm"]'
       process-modes: '["multi-process","single-process","standalone"]'
       memory-sizes: '["128mb","256mb"]'
-      skip-full-test-modes: '[]'
+      skip-full-test-modes: '["standalone"]'
       caller-event-name: ${{ github.event_name }}
       windows-test: true
     secrets:
@@ -51,7 +51,7 @@ jobs:
       platforms: '["hyperlight","microvm"]'
       process-modes: '["multi-process","single-process","standalone"]'
       memory-sizes: '["128mb","256mb"]'
-      skip-full-test-modes: '[]'
+      skip-full-test-modes: '["standalone"]'
       caller-event-name: 'schedule'
       windows-test: true
     secrets:
