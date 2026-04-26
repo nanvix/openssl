@@ -148,7 +148,7 @@ class OpenSSLBuild(ZScript):
                 try:
                     result = subprocess.run(
                         [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
-                         "-ramfs", str(ramfs_img), "--", f"./{binary.name}"],
+                         "-ramfs", str(ramfs_img), "--", str(binary.resolve())],
                         stdin=subprocess.DEVNULL, timeout=120,
                     )
                     if result.returncode != 0:

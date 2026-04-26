@@ -263,7 +263,7 @@ ifdef CONFIG_NANVIX_DOCKER
 	  timeout --foreground 120 ./bin/nanvixd.elf \
 	    -bin-dir ./bin -ramfs /tmp/rootfs.img \
 	    -console-file /dev/stdout \
-	    -- /$(notdir $(TEST_ELF))'
+	    -- $(DOCKER_WORKSPACE_PATH)/$(TEST_ELF)'
 	@echo "  PASS: openssl library test standalone (exit code 0)"
 else
 	@echo "  Running $(TEST_ELF) via nanvixd.elf standalone..."
@@ -273,7 +273,7 @@ else
 	cd "$(SYSROOT_PATH)" && timeout --foreground 120 ./bin/nanvixd.elf \
 	  -bin-dir ./bin -ramfs /tmp/rootfs.img \
 	  -console-file /dev/stdout \
-	  -- /$(notdir $(TEST_ELF))
+	  -- $(abspath $(TEST_ELF))
 	@rm -rf /tmp/nanvix-ramfs /tmp/rootfs.img
 	@echo "  PASS: openssl library test standalone (exit code 0)"
 endif
