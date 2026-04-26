@@ -262,6 +262,7 @@ ifdef CONFIG_NANVIX_DOCKER
 	  ./bin/mkramfs.elf -o /tmp/rootfs.img /tmp/nanvix-ramfs/ && \
 	  timeout --foreground 120 ./bin/nanvixd.elf \
 	    -bin-dir ./bin -ramfs /tmp/rootfs.img \
+	    -console-file /dev/stdout \
 	    -- /$(notdir $(TEST_ELF))'
 	@echo "  PASS: openssl library test standalone (exit code 0)"
 else
@@ -271,6 +272,7 @@ else
 	"$(SYSROOT_PATH)/bin/mkramfs.elf" -o /tmp/rootfs.img /tmp/nanvix-ramfs/
 	cd "$(SYSROOT_PATH)" && timeout --foreground 120 ./bin/nanvixd.elf \
 	  -bin-dir ./bin -ramfs /tmp/rootfs.img \
+	  -console-file /dev/stdout \
 	  -- /$(notdir $(TEST_ELF))
 	@rm -rf /tmp/nanvix-ramfs /tmp/rootfs.img
 	@echo "  PASS: openssl library test standalone (exit code 0)"
