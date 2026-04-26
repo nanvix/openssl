@@ -28,7 +28,10 @@ jobs:
     uses: nanvix/workflows/.github/workflows/nanvix-ci.yml@v1.12.0
     with:
       zutil-version: "v0.7.26"
+      platforms: '["hyperlight","microvm"]'
+      process-modes: '["multi-process","single-process","standalone"]'
       memory-sizes: '["128mb","256mb"]'
+      skip-full-test-modes: '[]'
       caller-event-name: ${{ github.event_name }}
       windows-test: true
     secrets:
@@ -45,7 +48,10 @@ jobs:
     uses: nanvix/workflows/.github/workflows/nanvix-ci.yml@v1.12.0
     with:
       zutil-version: "v0.7.26"
+      platforms: '["hyperlight","microvm"]'
+      process-modes: '["multi-process","single-process","standalone"]'
       memory-sizes: '["128mb","256mb"]'
+      skip-full-test-modes: '[]'
       caller-event-name: 'schedule'
       windows-test: true
     secrets:

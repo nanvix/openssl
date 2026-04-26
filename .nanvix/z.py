@@ -92,6 +92,12 @@ class OpenSSLBuild(ZScript):
 
     def _run_tests_windows(self) -> None:
         """Run tests natively on Windows using nanvixd.exe."""
+        if self.config.deployment_mode != "standalone":
+            print(
+                f"Skipping tests on Windows for mode '{self.config.deployment_mode}'"
+                " (single-process and multi-process require linuxd, Linux only)."
+            )
+            return
         sysroot = self.config.get(CFG_SYSROOT, "")
         if not sysroot:
             log.fatal(f"{CFG_SYSROOT} is not set.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
@@ -142,7 +148,7 @@ class OpenSSLBuild(ZScript):
                 try:
                     result = subprocess.run(
                         [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
-                         "-ramfs", str(ramfs_img), "--", f"./{binary.name}"],
+                         "-ramfs", str(ramfs_img), "--", str(binary.resolve())],
                         stdin=subprocess.DEVNULL, timeout=120,
                     )
                     if result.returncode != 0:
