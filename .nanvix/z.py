@@ -46,7 +46,7 @@ class OpenSSLBuild(ZScript):
                 code=EXIT_MISSING_DEP,
                 hint="Run `./z setup` first to download the sysroot.",
             )
-        toolchain = self.config.get(CFG_TOOLCHAIN, "/opt/nanvix")
+        toolchain = self.config.get(CFG_TOOLCHAIN, "/opt/nanvix") or "/opt/nanvix"
         sysroot_p = self.translate_path(Path(sysroot))
         toolchain_p = self.translate_path(Path(toolchain))
 
