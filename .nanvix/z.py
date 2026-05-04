@@ -31,8 +31,8 @@ _MAKE_VAR_INSTALL_PREFIX = "INSTALL_PREFIX"
 _DEFAULT_INSTALL_PREFIX = "/sysroot"
 
 
-
 IS_WINDOWS = sys.platform == "win32"
+
 
 class OpenSSLBuild(ZScript):
     """Build script for nanvix/openssl."""
@@ -51,17 +51,21 @@ class OpenSSLBuild(ZScript):
         toolchain_p = self.translate_path(Path(toolchain))
 
         args = [
-            "make", "-f", "Makefile.nanvix",
+            "make",
+            "-f",
+            "Makefile.nanvix",
             f"{_MAKE_VAR_CONFIG}=y",
             f"{_MAKE_VAR_HOME}={sysroot_p}",
             f"{_MAKE_VAR_TOOLCHAIN}={toolchain_p}",
         ]
 
-        args.extend([
-            f"{_MAKE_VAR_PLATFORM}={self.config.machine}",
-            f"{_MAKE_VAR_PROCESS_MODE}={self.config.deployment_mode}",
-            f"{_MAKE_VAR_MEMORY_SIZE}={self.config.memory_size}",
-        ])
+        args.extend(
+            [
+                f"{_MAKE_VAR_PLATFORM}={self.config.machine}",
+                f"{_MAKE_VAR_PROCESS_MODE}={self.config.deployment_mode}",
+                f"{_MAKE_VAR_MEMORY_SIZE}={self.config.memory_size}",
+            ]
+        )
 
         if with_install_prefix:
             args.append(f"{_MAKE_VAR_INSTALL_PREFIX}={_DEFAULT_INSTALL_PREFIX}")
@@ -100,14 +104,26 @@ class OpenSSLBuild(ZScript):
             return
         sysroot = self.config.get(CFG_SYSROOT, "")
         if not sysroot:
-            log.fatal(f"{CFG_SYSROOT} is not set.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+            log.fatal(
+                f"{CFG_SYSROOT} is not set.",
+                code=EXIT_MISSING_DEP,
+                hint="Run `./z setup` first.",
+            )
         sysroot_path = Path(sysroot)
         nanvixd = sysroot_path / "bin" / "nanvixd.exe"
         mkramfs = sysroot_path / "bin" / "mkramfs.exe"
         if not nanvixd.is_file():
-            log.fatal("nanvixd.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+            log.fatal(
+                "nanvixd.exe not found.",
+                code=EXIT_MISSING_DEP,
+                hint="Run `./z setup` first.",
+            )
         if not mkramfs.is_file():
-            log.fatal("mkramfs.exe not found.", code=EXIT_MISSING_DEP, hint="Run `./z setup` first.")
+            log.fatal(
+                "mkramfs.exe not found.",
+                code=EXIT_MISSING_DEP,
+                hint="Run `./z setup` first.",
+            )
 
         build_dir = self.repo_root / "build"
         test_binaries = sorted(build_dir.glob("*.elf")) if build_dir.is_dir() else []
@@ -119,7 +135,8 @@ class OpenSSLBuild(ZScript):
 
         import shutil
         import tempfile
-        failed = []
+
+        failed: list[str] = []
         for binary in test_binaries:
             name = binary.stem
             print(f"RUN  {name}...")
@@ -135,7 +152,8 @@ class OpenSSLBuild(ZScript):
                 try:
                     subprocess.run(
                         [str(mkramfs.resolve()), "-o", str(ramfs_img), str(ramfs_dir)],
-                        check=True, timeout=60,
+                        check=True,
+                        timeout=60,
                     )
                 except subprocess.CalledProcessError as e:
                     print(f"FAIL {name} (mkramfs exit code {e.returncode})")
@@ -147,9 +165,17 @@ class OpenSSLBuild(ZScript):
                     continue
                 try:
                     result = subprocess.run(
-                        [str(nanvixd.resolve()), "-bin-dir", str((sysroot_path / "bin").resolve()),
-                         "-ramfs", str(ramfs_img), "--", str(binary.resolve())],
-                        stdin=subprocess.DEVNULL, timeout=120,
+                        [
+                            str(nanvixd.resolve()),
+                            "-bin-dir",
+                            str((sysroot_path / "bin").resolve()),
+                            "-ramfs",
+                            str(ramfs_img),
+                            "--",
+                            str(binary.resolve()),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        timeout=120,
                     )
                     if result.returncode != 0:
                         print(f"FAIL {name} (exit code {result.returncode})")
@@ -173,7 +199,10 @@ class OpenSSLBuild(ZScript):
     def clean(self) -> None:
         """Remove build artifacts."""
         self.run(
-            "make", "-f", "Makefile.nanvix", "clean",
+            "make",
+            "-f",
+            "Makefile.nanvix",
+            "clean",
             cwd=self.repo_root,
         )
 
