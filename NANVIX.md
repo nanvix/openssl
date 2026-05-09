@@ -61,7 +61,9 @@ Or build directly with Make (advanced):
 
 ```bash
 # 1. Pull the Docker image
-docker pull nanvix/toolchain:latest-minimal
+docker pull ghcr.io/nanvix/toolchain-gcc:sha-34a3641
+# NOTE: If the image is private or you hit rate limits, authenticate first:
+#   docker login ghcr.io
 
 # 2. Download Nanvix sysroot
 curl -fsSL https://raw.githubusercontent.com/nanvix/nanvix/refs/heads/dev/scripts/get-nanvix.sh | bash -s -- nanvix-artifacts
@@ -132,7 +134,7 @@ The Makefile supports automatic Docker fallback when the native toolchain is not
 
 ```bash
 # Pull the Nanvix toolchain Docker image
-docker pull nanvix/toolchain:latest-minimal
+docker pull ghcr.io/nanvix/toolchain-gcc:sha-34a3641
 
 # Build (Docker is used automatically if native toolchain is not found)
 make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix/sysroot-debug
@@ -142,9 +144,10 @@ make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix/sysroot-debu
 
 **Docker Fallback Behavior:**
 - If `NANVIX_TOOLCHAIN` points to a valid toolchain, it uses the native compiler
-- If the native toolchain is not found, it automatically uses Docker if available
+- If the native toolchain is not found, it automatically uses Docker if available (auto-pulls the image if needed)
 - Use `CONFIG_NANVIX_DOCKER=y` to force Docker usage even when native toolchain exists
-- Use `NANVIX_DOCKER_IMAGE` to specify a custom Docker image (default: `nanvix/toolchain:latest-minimal`)
+- Use `NANVIX_DOCKER_IMAGE` to specify a custom Docker image (default: `ghcr.io/nanvix/toolchain-gcc:sha-34a3641`)
+- GHCR may require authentication (`docker login ghcr.io`) if the image is private or rate-limited
 
 ### Using Native Toolchain
 
