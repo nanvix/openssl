@@ -201,8 +201,7 @@ class OpenSSLBuild(ZScript):
     def release(self) -> None:
         """Package the release tarball natively (no Docker).
 
-        Uses Python's tarfile module for bz2 compression so there is no
-        dependency on the host ``bzip2`` binary.
+        Uses Python's tarfile module for gzip compression.
         """
         repo = self.repo_root
         libcrypto = repo / "libcrypto.a"
@@ -246,11 +245,11 @@ class OpenSSLBuild(ZScript):
         if test_elf.is_file():
             shutil.copy2(test_elf, sysroot / "bin" / test_elf.name)
 
-        # Build bz2-compressed tarball using Python (no external bzip2).
-        tarball = dist_dir / f"{artifact}.tar.bz2"
+        # Build gzip-compressed tarball using Python's tarfile module.
+        tarball = dist_dir / f"{artifact}.tar.gz"
         if tarball.exists():
             tarball.unlink()
-        with tarfile.open(tarball, "w:bz2") as tf:
+        with tarfile.open(tarball, "w:gz") as tf:
             tf.add(sysroot, arcname="sysroot")
         log.info(f"Wrote release tarball: {tarball}")
 
@@ -503,7 +502,7 @@ class OpenSSLBuild(ZScript):
             "sysroot/lib/libcrypto.a",
             "sysroot/lib/libssl.a",
         }
-        with tarfile.open(tarball, "r:bz2") as tf:
+        with tarfile.open(tarball, "r:gz") as tf:
             members = set(tf.getnames())
         missing = sorted(required - members)
         if missing:
