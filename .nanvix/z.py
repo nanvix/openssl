@@ -20,7 +20,14 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from nanvix_zutil import CFG_SYSROOT, CFG_TOOLCHAIN, EXIT_BUILD_FAILURE, EXIT_MISSING_DEP, ZScript, log  # type: ignore[reportAttributeAccessIssue, reportUnknownVariableType]
+from nanvix_zutil import (  # type: ignore[reportAttributeAccessIssue]
+    CFG_SYSROOT,
+    CFG_TOOLCHAIN,
+    EXIT_BUILD_FAILURE,
+    EXIT_MISSING_DEP,
+    ZScript,
+    log,
+)
 
 _EXIT_BUILD: int = EXIT_BUILD_FAILURE  # type: ignore[reportUnknownVariableType]
 _EXIT_DEP: int = EXIT_MISSING_DEP  # type: ignore[reportUnknownVariableType]
@@ -78,13 +85,13 @@ class OpenSSLBuild(ZScript):
             ).returncode
             == 0
         ):
-            self.docker = self.docker_config(derived)  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+            self.docker = self.docker_config(derived)
             return
 
         # Check whether the base image already ships FindBin.
         if (
             subprocess.run(
-                ["docker", "run", "--rm", base, "perl", "-MFindBin", "-e1"],  # type: ignore[reportUnknownArgumentType]
+                ["docker", "run", "--rm", base, "perl", "-MFindBin", "-e1"],
                 capture_output=True,
             ).returncode
             == 0
@@ -104,7 +111,7 @@ class OpenSSLBuild(ZScript):
             text=True,
             check=True,
         )
-        self.docker = self.docker_config(derived)  # type: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+        self.docker = self.docker_config(derived)
 
     def _make_args(self, *targets: str, with_install_prefix: bool = True) -> list[str]:
         """Build the common make argument list."""
@@ -159,44 +166,40 @@ class OpenSSLBuild(ZScript):
     def test(self) -> None:
         """Run tests natively on the host (no Docker).
 
-        Three tiers:
-          - smoke: verify build artifacts exist and look sane
-          - integration: confirm the test ELF is a valid static binary
-          - functional: execute the test ELF under nanvixd.elf
+        Smoke and integration tests are always delegated to the Makefile.
+        The functional test in standalone mode is handled in Python via
+        make_initrd so that initrd creation is shared across platforms.
         """
         if IS_WINDOWS:
             self._run_tests_windows()
             return
-        tier_map = {
-            "test-smoke": self._test_smoke,
-            "smoke": self._test_smoke,
-            "test-integration": self._test_integration,
-            "integration": self._test_integration,
-            "test-functional": self._test_functional,
-            "functional": self._test_functional,
+
+        # Normalize short aliases to canonical Makefile target names.
+        _alias_map: dict[str, str] = {
+            "smoke": "test-smoke",
+            "integration": "test-integration",
+            "functional": "test-functional",
         }
-        run_all = [
-            self._test_smoke,
-            self._test_integration,
-            self._test_functional,
-        ]
-        if self.targets:
-            unknown = [t for t in self.targets if t not in tier_map and t != "test"]
-            if unknown:
-                log.fatal(
-                    f"Unknown test target(s): {', '.join(unknown)}",
-                    code=_EXIT_BUILD,
-                    hint=f"Known: {', '.join(sorted(set(tier_map)))}",
-                )
-            if "test" in self.targets:
-                tiers = run_all
-            else:
-                tiers = [tier_map[t] for t in self.targets]
+        targets = [_alias_map.get(t, t) for t in (self.targets if self.targets else [])]
+
+        if self.config.deployment_mode == "standalone":
+            _functional_targets = {"test", "test-functional"}
+            needs_functional = not targets or bool(set(targets) & _functional_targets)
+            make_targets = [t for t in targets if t not in _functional_targets]
+            if not targets:
+                make_targets = ["test-smoke", "test-integration"]
+            elif needs_functional and not make_targets:
+                if "test" in targets:
+                    make_targets = ["test-smoke", "test-integration"]
+                else:
+                    make_targets = ["test-integration"]
+            if make_targets:
+                self.run(*self._make_args(*make_targets), cwd=self.repo_root)
+            if needs_functional:
+                self._run_functional_standalone()
         else:
-            tiers = run_all
-        for tier in tiers:
-            tier()
-        log.info("=== All openssl tests PASSED ===")
+            run_targets = targets if targets else ["test"]
+            self.run(*self._make_args(*run_targets), cwd=self.repo_root)
 
     def release(self) -> None:
         """Package the release tarball natively (no Docker).
@@ -266,117 +269,76 @@ class OpenSSLBuild(ZScript):
         )
 
     # ------------------------------------------------------------------
-    # Test tiers (run natively on the host)
+    # Functional tests
     # ------------------------------------------------------------------
 
-    def _test_smoke(self) -> None:
-        """Verify build artefacts exist and look sane (no runtime)."""
-        log.info("=== openssl smoke tests ===")
-        repo = self.repo_root
-        checks: list[tuple[Path, int]] = [
-            (repo / "libcrypto.a", 1000),
-            (repo / "libssl.a", 1000),
-            (repo / "include" / "openssl" / "ssl.h", 0),
-            (repo / "include" / "openssl" / "evp.h", 0),
-            (repo / "include" / "openssl" / "opensslv.h", 0),
-        ]
-        for path, floor in checks:
-            if not path.is_file():
-                log.fatal(
-                    f"smoke: missing {path.name}",
-                    code=_EXIT_BUILD,
-                    hint="Run `./z build` first.",
-                )
-            size = path.stat().st_size
-            if size < floor:
-                log.fatal(
-                    f"smoke: {path.name} too small ({size} < {floor})",
-                    code=_EXIT_BUILD,
-                )
-            log.info(f"  OK: {path.name} ({size} bytes)")
-        log.info("  PASS: openssl smoke tests")
+    def _run_functional_standalone(self) -> None:
+        """Run standalone functional tests using make_initrd.
 
-    def _test_integration(self) -> None:
-        """Confirm the test ELF is a valid static binary."""
-        log.info("=== openssl integration tests ===")
+        Creates an initrd bundling the test ELF with system daemons via
+        make_initrd, and a ramfs providing /tmp for test I/O.
+        """
         elf = self.repo_root / _TEST_ELF
         if not elf.is_file():
             log.fatal(
-                f"integration: {_TEST_ELF} not found",
+                f"{_TEST_ELF} not found.",
                 code=_EXIT_BUILD,
                 hint="Run `./z build` first.",
             )
-        with elf.open("rb") as fh:
-            magic = fh.read(4)
-        if magic != b"\x7fELF":
-            log.fatal(
-                f"integration: {_TEST_ELF} is not an ELF binary " f"(magic={magic!r})",
-                code=_EXIT_BUILD,
-            )
-        size = elf.stat().st_size
-        log.info(f"  OK: {_TEST_ELF} ({size} bytes, ELF)")
-        log.info("  PASS: openssl integration tests")
 
-    def _test_functional(self) -> None:
-        """Run the test ELF under nanvixd.elf."""
-        log.info("=== openssl functional tests ===")
         sysroot = self._sysroot_path()
-        nanvixd = sysroot / "bin" / "nanvixd.elf"
         mkramfs = sysroot / "bin" / "mkramfs.elf"
-        elf = self.repo_root / _TEST_ELF
-
-        for tool in (nanvixd, mkramfs, elf):
+        nanvixd = sysroot / "bin" / "nanvixd.elf"
+        for tool in (mkramfs, nanvixd):
             if not tool.is_file():
                 log.fatal(
                     f"functional: {tool} not found",
                     code=_EXIT_DEP,
-                    hint="Run `./z setup` and `./z build` first.",
+                    hint="Run `./z setup` first.",
                 )
 
-        with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
-            tmp_path = Path(tmp)
-            ramfs_dir = tmp_path / "ramfs"
-            ramfs_dir.mkdir()
-            (ramfs_dir / "tmp").mkdir()
-            shutil.copy2(elf, ramfs_dir / elf.name)
+        log.info("=== openssl functional tests ===")
+        log.info(f"  Running {_TEST_ELF} via nanvixd standalone...")
 
-            ramfs_img = tmp_path / "rootfs.img"
-            subprocess.run(
-                [str(mkramfs), "-o", str(ramfs_img), str(ramfs_dir)],
-                check=True,
-                timeout=60,
-            )
+        initrd = self.make_initrd(_TEST_ELF)
+        try:
+            with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
+                tmp_path = Path(tmp)
+                ramfs_dir = tmp_path / "ramfs"
+                ramfs_dir.mkdir()
+                (ramfs_dir / "tmp").mkdir()
+                ramfs_img = tmp_path / "rootfs.img"
 
-            cmd = [
-                str(nanvixd),
-                "-bin-dir",
-                str(sysroot / "bin"),
-                "-ramfs",
-                str(ramfs_img),
-                "--",
-                str(elf.resolve()),
-            ]
-            log.info(f"$ {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd,
-                timeout=180,
-                capture_output=True,
-                text=True,
-            )
+                self.run(
+                    str(mkramfs),
+                    "-o",
+                    str(ramfs_img),
+                    str(ramfs_dir),
+                    docker=False,
+                    timeout=60,
+                )
 
-        if result.returncode != 0:
-            sys.stdout.write(result.stdout)
-            sys.stderr.write(result.stderr)
-            log.fatal(
-                f"functional: {_TEST_ELF} failed (exit {result.returncode})",
-                code=_EXIT_BUILD,
-            )
-        sys.stdout.write(result.stdout)
+                self.run(
+                    str(nanvixd),
+                    "-bin-dir",
+                    str(sysroot / "bin"),
+                    "-ramfs",
+                    str(ramfs_img),
+                    "--",
+                    str(initrd),
+                    docker=False,
+                    timeout=180,
+                )
+        finally:
+            if initrd.exists():
+                initrd.unlink()
+
         log.info(
             f"  PASS: openssl library test "
             f"{self.config.deployment_mode} (exit code 0)"
         )
         log.info("  PASS: openssl functional tests")
+        log.info("=== All openssl tests PASSED ===")
 
     def _sysroot_path(self) -> Path:
         """Return the host-side sysroot path."""
@@ -394,7 +356,12 @@ class OpenSSLBuild(ZScript):
     # ------------------------------------------------------------------
 
     def _run_tests_windows(self) -> None:
-        """Run tests natively on Windows using nanvixd.exe."""
+        """Run tests natively on Windows using nanvixd.exe.
+
+        Uses make_initrd to bundle the binary with system daemons,
+        and a ramfs for test I/O. Only standalone mode is supported
+        on Windows.
+        """
         if self.config.deployment_mode != "standalone":
             print(
                 f"Skipping tests on Windows for mode"
@@ -438,54 +405,56 @@ class OpenSSLBuild(ZScript):
         for binary in test_binaries:
             name = binary.stem
             print(f"RUN  {name}...")
-            with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
-                tmpdir_path = Path(tmpdir)
-                ramfs_dir = tmpdir_path / "ramfs"
-                ramfs_dir.mkdir()
-                (ramfs_dir / "tmp").mkdir(exist_ok=True)
-                shutil.copy2(binary, ramfs_dir / binary.name)
-                ramfs_img = tmpdir_path / f"rootfs_{name}.img"
-                try:
-                    subprocess.run(
-                        [
-                            str(mkramfs.resolve()),
-                            "-o",
-                            str(ramfs_img),
-                            str(ramfs_dir),
-                        ],
-                        check=True,
+            # make_initrd resolves binaries relative to repo_root;
+            # copy the ELF there temporarily unless it already lives there.
+            repo_elf = self.repo_root / binary.name
+            copied_elf = False
+            initrd: Path | None = None
+            try:
+                if binary.resolve() != repo_elf.resolve():
+                    if repo_elf.exists():
+                        raise FileExistsError(
+                            f"refusing to clobber existing {repo_elf}"
+                        )
+                    shutil.copy2(binary, repo_elf)
+                    copied_elf = True
+                initrd = self.make_initrd(binary.name)
+                with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
+                    tmpdir_path = Path(tmpdir)
+                    ramfs_dir = tmpdir_path / "ramfs"
+                    ramfs_dir.mkdir()
+                    (ramfs_dir / "tmp").mkdir(exist_ok=True)
+                    ramfs_img = tmpdir_path / f"rootfs_{name}.img"
+
+                    self.run(
+                        str(mkramfs),
+                        "-o",
+                        str(ramfs_img),
+                        str(ramfs_dir),
+                        docker=False,
                         timeout=60,
                     )
-                except subprocess.CalledProcessError as e:
-                    print(f"FAIL {name} (mkramfs exit code {e.returncode})")
-                    failed.append(name)
-                    continue
-                except subprocess.TimeoutExpired:
-                    print(f"FAIL {name} (mkramfs timeout)")
-                    failed.append(name)
-                    continue
-                try:
-                    result = subprocess.run(
-                        [
-                            str(nanvixd.resolve()),
-                            "-bin-dir",
-                            str((sysroot_path / "bin").resolve()),
-                            "-ramfs",
-                            str(ramfs_img),
-                            "--",
-                            str(binary.resolve()),
-                        ],
-                        stdin=subprocess.DEVNULL,
+
+                    self.run(
+                        str(nanvixd),
+                        "-bin-dir",
+                        str(sysroot_path / "bin"),
+                        "-ramfs",
+                        str(ramfs_img),
+                        "--",
+                        str(initrd),
+                        docker=False,
                         timeout=120,
                     )
-                    if result.returncode != 0:
-                        print(f"FAIL {name} (exit code {result.returncode})")
-                        failed.append(name)
-                    else:
-                        print(f"OK   {name}")
-                except subprocess.TimeoutExpired:
-                    print(f"FAIL {name} (timeout)")
-                    failed.append(name)
+                print(f"OK   {name}")
+            except SystemExit:
+                print(f"FAIL {name}")
+                failed.append(name)
+            finally:
+                if initrd is not None and initrd.exists():
+                    initrd.unlink()
+                if copied_elf and repo_elf.exists():
+                    repo_elf.unlink()
 
         if failed:
             msg = " ".join(failed)
