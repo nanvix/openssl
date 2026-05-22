@@ -6,5 +6,4 @@ buildroot/
 .yamllint.yml
 black.toml
 env.json
-nanvix.lock
 pyrightconfig.json

@@ -20,20 +20,19 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from nanvix_zutil import (  # type: ignore[reportAttributeAccessIssue]
+from nanvix_zutil import (
     CFG_SYSROOT,
-    TOOLCHAIN_CONTAINER_PATH,
     EXIT_BUILD_FAILURE,
     EXIT_MISSING_DEP,
+    TOOLCHAIN_CONTAINER_PATH,
     ZScript,
     log,
 )
 
-_EXIT_BUILD: int = EXIT_BUILD_FAILURE  # type: ignore[reportUnknownVariableType]
-_EXIT_DEP: int = EXIT_MISSING_DEP  # type: ignore[reportUnknownVariableType]
+_EXIT_BUILD: int = EXIT_BUILD_FAILURE
+_EXIT_DEP: int = EXIT_MISSING_DEP
 
 # Makefile variable names (build-system-specific).
-_MAKE_VAR_CONFIG = "CONFIG_NANVIX"
 _MAKE_VAR_HOME = "NANVIX_HOME"
 _MAKE_VAR_TOOLCHAIN = "NANVIX_TOOLCHAIN"
 _MAKE_VAR_PLATFORM = "PLATFORM"
@@ -113,8 +112,22 @@ class OpenSSLBuild(ZScript):
         )
         self.docker = self.docker_config(derived)
 
-    def _make_args(self, *targets: str, with_install_prefix: bool = True) -> list[str]:
-        """Build the common make argument list."""
+    def _make_args(
+        self,
+        *targets: str,
+        docker: bool,
+        with_install_prefix: bool = True,
+    ) -> list[str]:
+        """Build the common make argument list.
+
+        ``docker`` selects the path mode: when ``True``, the sysroot path
+        is run through :meth:`translate_path` (so the make invocation
+        inside the container sees the bind-mounted path); when ``False``,
+        the raw host path is used (so a host-side make sees the real
+        filesystem path). ``NANVIX_TOOLCHAIN`` is always the in-container
+        toolchain path because the only goals that dereference it run
+        under Docker.
+        """
         sysroot = self.config.get(CFG_SYSROOT, "")
         if not sysroot:
             log.fatal(
@@ -122,15 +135,13 @@ class OpenSSLBuild(ZScript):
                 code=_EXIT_DEP,
                 hint="Run `./z setup` first to download the sysroot.",
             )
-        toolchain = str(TOOLCHAIN_CONTAINER_PATH)
-        sysroot_p = self.translate_path(Path(sysroot))
-        toolchain_p = toolchain
+        toolchain_p = str(TOOLCHAIN_CONTAINER_PATH)
+        sysroot_p = self.translate_path(Path(sysroot)) if docker else Path(sysroot)
 
         args = [
             "make",
             "-f",
             "Makefile.nanvix",
-            f"{_MAKE_VAR_CONFIG}=y",
             f"{_MAKE_VAR_HOME}={sysroot_p}",
             f"{_MAKE_VAR_TOOLCHAIN}={toolchain_p}",
         ]
@@ -153,15 +164,19 @@ class OpenSSLBuild(ZScript):
     # Core lifecycle: setup / build / test / release / clean
     # ------------------------------------------------------------------
 
-    def setup(self) -> None:
+    def setup(self) -> bool:
         """Download the Nanvix sysroot."""
-        super().setup()
+        return super().setup()
 
     def build(self) -> None:
         """Cross-compile libcrypto.a, libssl.a, and test ELF (in Docker)."""
         self._ensure_docker_perl()
         # Build libraries and test binary in one pass.
-        self.run(*self._make_args("all", _TEST_ELF), cwd=self.repo_root)
+        self.run(
+            *self._make_args("all", _TEST_ELF, docker=True),
+            cwd=self.repo_root,
+            docker=True,
+        )
 
     def test(self) -> None:
         """Run tests natively on the host (no Docker).
@@ -173,6 +188,8 @@ class OpenSSLBuild(ZScript):
         if IS_WINDOWS:
             self._run_tests_windows()
             return
+
+        self._require_build_artifacts()
 
         # Normalize short aliases to canonical Makefile target names.
         _alias_map: dict[str, str] = {
@@ -194,12 +211,20 @@ class OpenSSLBuild(ZScript):
                 else:
                     make_targets = ["test-integration"]
             if make_targets:
-                self.run(*self._make_args(*make_targets), cwd=self.repo_root)
+                self.run(
+                    *self._make_args(*make_targets, docker=False),
+                    cwd=self.repo_root,
+                    docker=False,
+                )
             if needs_functional:
                 self._run_functional_standalone()
         else:
             run_targets = targets if targets else ["test"]
-            self.run(*self._make_args(*run_targets), cwd=self.repo_root)
+            self.run(
+                *self._make_args(*run_targets, docker=False),
+                cwd=self.repo_root,
+                docker=False,
+            )
 
     def release(self) -> None:
         """Package the release tarball natively (no Docker).
@@ -266,7 +291,35 @@ class OpenSSLBuild(ZScript):
             "Makefile.nanvix",
             "clean",
             cwd=self.repo_root,
+            docker=False,
         )
+
+    # ------------------------------------------------------------------
+    # Preflight
+    # ------------------------------------------------------------------
+
+    def _require_build_artifacts(self) -> None:
+        """Fatal-out early when build outputs aren't present.
+
+        The Makefile recipes will catch this too, but emitting it from
+        Python keeps the failure mode consistent across platforms/modes
+        (Linux/Windows, microvm/standalone) and points the user at the
+        right remediation without needing to parse make output.
+        """
+        required = [
+            self.repo_root / "libcrypto.a",
+            self.repo_root / "libssl.a",
+            self.repo_root / "include" / "openssl" / "opensslv.h",
+            self.repo_root / _TEST_ELF,
+        ]
+        missing = [p for p in required if not p.exists()]
+        if missing:
+            log.fatal(
+                "test: missing build artefact(s): "
+                + ", ".join(str(p.relative_to(self.repo_root)) for p in missing),
+                code=_EXIT_BUILD,
+                hint="Run `./z build` first.",
+            )
 
     # ------------------------------------------------------------------
     # Functional tests
@@ -334,8 +387,7 @@ class OpenSSLBuild(ZScript):
                 initrd.unlink()
 
         log.info(
-            f"  PASS: openssl library test "
-            f"{self.config.deployment_mode} (exit code 0)"
+            f"  PASS: openssl library test {self.config.deployment_mode} (exit code 0)"
         )
         log.info("  PASS: openssl functional tests")
         log.info("=== All openssl tests PASSED ===")
@@ -485,7 +537,7 @@ class OpenSSLBuild(ZScript):
             for m in members
         ):
             log.fatal(
-                "release: tarball has no entries under" " sysroot/include/openssl/",
+                "release: tarball has no entries under sysroot/include/openssl/",
                 code=_EXIT_BUILD,
                 hint=f"Tarball: {tarball}",
             )
