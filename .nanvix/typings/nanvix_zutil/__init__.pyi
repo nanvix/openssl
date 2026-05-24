@@ -3,6 +3,7 @@ from typing import NoReturn
 
 CFG_SYSROOT: str
 CFG_TOOLCHAIN: str
+TOOLCHAIN_CONTAINER_PATH: str
 EXIT_BUILD_FAILURE: int
 EXIT_MISSING_DEP: int
 
