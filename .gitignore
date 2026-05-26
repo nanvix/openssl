@@ -327,3 +327,6 @@ doc-nits
 # LSP (Language Server Protocol) support
 .cache/
 compile_commands.json
+
+# Nanvix
+openssl_nanvix_test.elf

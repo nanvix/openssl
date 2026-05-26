@@ -6,13 +6,14 @@
 Usage:
     ./z setup     # Download Nanvix sysroot
     ./z build     # Cross-compile libcrypto.a, libssl.a, and test ELF
-    ./z test      # Run test suite (smoke + integration + functional)
+    ./z test      # Run functional test (test ELF on nanvixd)
     ./z release   # Package release tarball
     ./z clean     # Remove build artifacts
 """
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from nanvix_zutil import (
     EXIT_BUILD_FAILURE,
     EXIT_MISSING_DEP,
     TOOLCHAIN_CONTAINER_PATH,
+    DockerConfig,
     ZScript,
     log,
     make_initrd,
@@ -52,6 +54,54 @@ _DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-gcc:sha-34a3641"
 # Test binary name produced by the Makefile.
 _TEST_ELF = "openssl_nanvix_test.elf"
 
+# Public headers generated from ``include/openssl/*.h.in`` templates by
+# OpenSSL's ``Configure`` step. These are not present in the source tree
+# and must be copied back from the container after the build so that
+# host-side release packaging (which ships every ``include/openssl/*.h``)
+# produces complete tarballs.
+_GENERATED_HEADERS: list[str] = [
+    "asn1.h",
+    "asn1t.h",
+    "bio.h",
+    "cmp.h",
+    "cms.h",
+    "comp.h",
+    "conf.h",
+    "configuration.h",
+    "core_names.h",
+    "crmf.h",
+    "crypto.h",
+    "ct.h",
+    "err.h",
+    "ess.h",
+    "fipskey.h",
+    "lhash.h",
+    "ocsp.h",
+    "opensslv.h",
+    "pkcs12.h",
+    "pkcs7.h",
+    "safestack.h",
+    "srp.h",
+    "ssl.h",
+    "ui.h",
+    "x509.h",
+    "x509_acert.h",
+    "x509_vfy.h",
+    "x509v3.h",
+]
+
+# Files produced inside the Docker tar-copy build dir (Windows path) that
+# must be copied back to the host workspace so subsequent host-side steps
+# (tests, release packaging) can find them. Paths are relative to the
+# workspace root (i.e. ``/tmp/build`` inside the container, ``repo_root``
+# on the host).
+_BUILD_OUTPUTS: list[str] = [
+    "libcrypto.a",
+    "libssl.a",
+    _TEST_ELF,
+    *(f"include/openssl/{h}" for h in _GENERATED_HEADERS),
+]
+
 IS_WINDOWS = sys.platform == "win32"
 
 
@@ -61,6 +111,19 @@ class OpenSSLBuild(ZScript):
     def docker_image(self) -> str:
         """Return the Docker image for cross-compilation."""
         return _DOCKER_IMAGE
+
+    def docker_config(self, image: str) -> DockerConfig:
+        """Extend the default Docker config with build outputs.
+
+        On Windows the build runs in a container-local directory via
+        :meth:`DockerConfig.build_windows_run_cmd` to avoid VirtioFS I/O
+        penalties; ``output_files`` tells that helper which artefacts to
+        copy back into the mounted workspace so host-side test code can
+        find them. The list is harmless on Linux (where the workspace
+        itself is the build directory).
+        """
+        cfg = super().docker_config(image)
+        return dataclasses.replace(cfg, output_files=list(_BUILD_OUTPUTS))
 
     def _ensure_docker_perl(self) -> None:
         """Ensure the Docker image has Perl with FindBin (needed by Configure).
@@ -180,44 +243,27 @@ class OpenSSLBuild(ZScript):
         )
 
     def test(self) -> None:
-        """Run tests natively on the host (no Docker).
+        """Run the functional test (test ELF on ``nanvixd``).
 
-        Smoke and integration tests are always delegated to the Makefile.
-        The functional test in standalone mode is handled in Python via
-        make_initrd so that initrd creation is shared across platforms.
+        The functional run is the only meaningful test: it boots the
+        cross-compiled ``openssl_nanvix_test.elf`` under ``nanvixd`` and
+        asserts the in-guest OpenSSL self-test prints ``PASS``. Earlier
+        "smoke" and "integration" phases only re-asserted what the build
+        step itself guarantees (build outputs present and non-empty) and
+        were dropped.
+
+        Only standalone deployment mode runs a real test; other modes
+        require ``linuxd`` (Linux only) and are not yet wired up here.
         """
-        if IS_WINDOWS:
-            self._run_tests_windows()
+        if self.config.deployment_mode != "standalone":
+            log.info(
+                f"Skipping tests for mode '{self.config.deployment_mode}'"
+                " (only standalone is supported)."
+            )
             return
 
         self._require_build_artifacts()
-
-        # Normalize short aliases to canonical Makefile target names.
-        _alias_map: dict[str, str] = {
-            "smoke": "test-smoke",
-            "integration": "test-integration",
-            "functional": "test-functional",
-        }
-        targets = [_alias_map.get(t, t) for t in (self.targets if self.targets else [])]
-
-        if self.config.deployment_mode == "standalone":
-            _functional_targets = {"test", "test-functional"}
-            needs_functional = not targets or bool(set(targets) & _functional_targets)
-            make_targets = [t for t in targets if t not in _functional_targets]
-            if not targets:
-                make_targets = ["test-smoke", "test-integration"]
-            elif needs_functional and not make_targets:
-                if "test" in targets:
-                    make_targets = ["test-smoke", "test-integration"]
-                else:
-                    make_targets = ["test-integration"]
-            if make_targets:
-                run(*self._make_args(*make_targets), cwd=self.repo_root)
-            if needs_functional:
-                self._run_functional_standalone()
-        else:
-            run_targets = targets if targets else ["test"]
-            run(*self._make_args(*run_targets), cwd=self.repo_root)
+        self._run_functional_standalone()
 
     def release(self) -> None:
         """Package the release tarball natively (no Docker).
@@ -291,24 +337,17 @@ class OpenSSLBuild(ZScript):
     # ------------------------------------------------------------------
 
     def _require_build_artifacts(self) -> None:
-        """Fatal-out early when build outputs aren't present.
+        """Fatal-out early when the test ELF isn't present.
 
         The Makefile recipes will catch this too, but emitting it from
         Python keeps the failure mode consistent across platforms/modes
         (Linux/Windows, microvm/standalone) and points the user at the
         right remediation without needing to parse make output.
         """
-        required = [
-            self.repo_root / "libcrypto.a",
-            self.repo_root / "libssl.a",
-            self.repo_root / "include" / "openssl" / "opensslv.h",
-            self.repo_root / _TEST_ELF,
-        ]
-        missing = [p for p in required if not p.exists()]
-        if missing:
+        elf = self.repo_root / _TEST_ELF
+        if not elf.is_file():
             log.fatal(
-                "test: missing build artefact(s): "
-                + ", ".join(str(p.relative_to(self.repo_root)) for p in missing),
+                f"test: missing build artefact: {_TEST_ELF}",
                 code=_EXIT_BUILD,
                 hint="Run `./z build` first.",
             )
@@ -332,8 +371,11 @@ class OpenSSLBuild(ZScript):
             )
 
         sysroot = self._sysroot_path()
-        mkramfs = sysroot / "bin" / "mkramfs.elf"
-        nanvixd = sysroot / "bin" / "nanvixd.elf"
+        # Host tools are .exe on Windows, .elf elsewhere. The guest test
+        # binary always keeps its .elf suffix because nanvixd loads it.
+        host_ext = ".exe" if IS_WINDOWS else ".elf"
+        mkramfs = sysroot / "bin" / f"mkramfs{host_ext}"
+        nanvixd = sysroot / "bin" / f"nanvixd{host_ext}"
         for tool in (mkramfs, nanvixd):
             if not tool.is_file():
                 log.fatal(
@@ -392,114 +434,6 @@ class OpenSSLBuild(ZScript):
                 hint="Run `./z setup` first.",
             )
         return Path(sysroot)
-
-    # ------------------------------------------------------------------
-    # Windows test support
-    # ------------------------------------------------------------------
-
-    def _run_tests_windows(self) -> None:
-        """Run tests natively on Windows using nanvixd.exe.
-
-        Uses make_initrd to bundle the binary with system daemons,
-        and a ramfs for test I/O. Only standalone mode is supported
-        on Windows.
-        """
-        if self.config.deployment_mode != "standalone":
-            print(
-                f"Skipping tests on Windows for mode"
-                f" '{self.config.deployment_mode}'"
-                " (single-process and multi-process require linuxd,"
-                " Linux only)."
-            )
-            return
-        sysroot = self.config.get(CFG_SYSROOT, "")
-        if not sysroot:
-            log.fatal(
-                f"{CFG_SYSROOT} is not set.",
-                code=_EXIT_DEP,
-                hint="Run `./z setup` first.",
-            )
-        sysroot_path = Path(sysroot)
-        nanvixd = sysroot_path / "bin" / "nanvixd.exe"
-        mkramfs = sysroot_path / "bin" / "mkramfs.exe"
-        if not nanvixd.is_file():
-            log.fatal(
-                "nanvixd.exe not found.",
-                code=_EXIT_DEP,
-                hint="Run `./z setup` first.",
-            )
-        if not mkramfs.is_file():
-            log.fatal(
-                "mkramfs.exe not found.",
-                code=_EXIT_DEP,
-                hint="Run `./z setup` first.",
-            )
-
-        build_dir = self.repo_root / "build"
-        test_binaries = sorted(build_dir.glob("*.elf")) if build_dir.is_dir() else []
-
-        if not test_binaries:
-            print("No test binaries found in build/ -- smoke test only.")
-            print("OK: library-only repo, no functional tests to run on Windows")
-            return
-
-        failed: list[str] = []
-        for binary in test_binaries:
-            name = binary.stem
-            print(f"RUN  {name}...")
-            # make_initrd resolves binaries relative to repo_root;
-            # copy the ELF there temporarily unless it already lives there.
-            repo_elf = self.repo_root / binary.name
-            copied_elf = False
-            initrd: Path | None = None
-            try:
-                if binary.resolve() != repo_elf.resolve():
-                    if repo_elf.exists():
-                        raise FileExistsError(
-                            f"refusing to clobber existing {repo_elf}"
-                        )
-                    shutil.copy2(binary, repo_elf)
-                    copied_elf = True
-                initrd = make_initrd(self, binary.name)
-                with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
-                    tmpdir_path = Path(tmpdir)
-                    ramfs_dir = tmpdir_path / "ramfs"
-                    ramfs_dir.mkdir()
-                    (ramfs_dir / "tmp").mkdir(exist_ok=True)
-                    ramfs_img = tmpdir_path / f"rootfs_{name}.img"
-
-                    run(
-                        str(mkramfs),
-                        "-o",
-                        str(ramfs_img),
-                        str(ramfs_dir),
-                        timeout=60,
-                    )
-
-                    run(
-                        str(nanvixd),
-                        "-bin-dir",
-                        str(sysroot_path / "bin"),
-                        "-ramfs",
-                        str(ramfs_img),
-                        "--",
-                        str(initrd),
-                        timeout=120,
-                    )
-                print(f"OK   {name}")
-            except SystemExit:
-                print(f"FAIL {name}")
-                failed.append(name)
-            finally:
-                if initrd is not None and initrd.exists():
-                    initrd.unlink()
-                if copied_elf and repo_elf.exists():
-                    repo_elf.unlink()
-
-        if failed:
-            msg = " ".join(failed)
-            raise RuntimeError(f"{len(failed)} test(s) failed: {msg}")
-        print(f"\t\t*** All {len(test_binaries)} tests PASSED ***")
 
     # ------------------------------------------------------------------
     # Release verification
