@@ -27,6 +27,8 @@ from nanvix_zutil import (
     TOOLCHAIN_CONTAINER_PATH,
     ZScript,
     log,
+    make_initrd,
+    run,
 )
 
 _EXIT_BUILD: int = EXIT_BUILD_FAILURE
@@ -115,16 +117,13 @@ class OpenSSLBuild(ZScript):
     def _make_args(
         self,
         *targets: str,
-        docker: bool,
         with_install_prefix: bool = True,
     ) -> list[str]:
         """Build the common make argument list.
 
-        ``docker`` selects the path mode: when ``True``, the sysroot path
-        is run through :meth:`translate_path` (so the make invocation
-        inside the container sees the bind-mounted path); when ``False``,
-        the raw host path is used (so a host-side make sees the real
-        filesystem path). ``NANVIX_TOOLCHAIN`` is always the in-container
+        Path translation for ``NANVIX_HOME`` is applied when running
+        under Docker (``self.docker`` is set); otherwise the raw host
+        path is used.  ``NANVIX_TOOLCHAIN`` is always the in-container
         toolchain path because the only goals that dereference it run
         under Docker.
         """
@@ -136,7 +135,9 @@ class OpenSSLBuild(ZScript):
                 hint="Run `./z setup` first to download the sysroot.",
             )
         toolchain_p = str(TOOLCHAIN_CONTAINER_PATH)
-        sysroot_p = self.translate_path(Path(sysroot)) if docker else Path(sysroot)
+        sysroot_p = (
+            self.docker.translate_path(Path(sysroot)) if self.docker else Path(sysroot)
+        )
 
         args = [
             "make",
@@ -172,10 +173,10 @@ class OpenSSLBuild(ZScript):
         """Cross-compile libcrypto.a, libssl.a, and test ELF (in Docker)."""
         self._ensure_docker_perl()
         # Build libraries and test binary in one pass.
-        self.run(
-            *self._make_args("all", _TEST_ELF, docker=True),
+        run(
+            *self._make_args("all", _TEST_ELF),
             cwd=self.repo_root,
-            docker=True,
+            docker=self.docker,
         )
 
     def test(self) -> None:
@@ -211,20 +212,12 @@ class OpenSSLBuild(ZScript):
                 else:
                     make_targets = ["test-integration"]
             if make_targets:
-                self.run(
-                    *self._make_args(*make_targets, docker=False),
-                    cwd=self.repo_root,
-                    docker=False,
-                )
+                run(*self._make_args(*make_targets), cwd=self.repo_root)
             if needs_functional:
                 self._run_functional_standalone()
         else:
             run_targets = targets if targets else ["test"]
-            self.run(
-                *self._make_args(*run_targets, docker=False),
-                cwd=self.repo_root,
-                docker=False,
-            )
+            run(*self._make_args(*run_targets), cwd=self.repo_root)
 
     def release(self) -> None:
         """Package the release tarball natively (no Docker).
@@ -285,13 +278,12 @@ class OpenSSLBuild(ZScript):
 
     def clean(self) -> None:
         """Remove build artifacts."""
-        self.run(
+        run(
             "make",
             "-f",
             "Makefile.nanvix",
             "clean",
             cwd=self.repo_root,
-            docker=False,
         )
 
     # ------------------------------------------------------------------
@@ -353,7 +345,7 @@ class OpenSSLBuild(ZScript):
         log.info("=== openssl functional tests ===")
         log.info(f"  Running {_TEST_ELF} via nanvixd standalone...")
 
-        initrd = self.make_initrd(_TEST_ELF)
+        initrd = make_initrd(self, _TEST_ELF)
         try:
             with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
                 tmp_path = Path(tmp)
@@ -362,16 +354,15 @@ class OpenSSLBuild(ZScript):
                 (ramfs_dir / "tmp").mkdir()
                 ramfs_img = tmp_path / "rootfs.img"
 
-                self.run(
+                run(
                     str(mkramfs),
                     "-o",
                     str(ramfs_img),
                     str(ramfs_dir),
-                    docker=False,
                     timeout=60,
                 )
 
-                self.run(
+                run(
                     str(nanvixd),
                     "-bin-dir",
                     str(sysroot / "bin"),
@@ -379,7 +370,6 @@ class OpenSSLBuild(ZScript):
                     str(ramfs_img),
                     "--",
                     str(initrd),
-                    docker=False,
                     timeout=180,
                 )
         finally:
@@ -470,7 +460,7 @@ class OpenSSLBuild(ZScript):
                         )
                     shutil.copy2(binary, repo_elf)
                     copied_elf = True
-                initrd = self.make_initrd(binary.name)
+                initrd = make_initrd(self, binary.name)
                 with tempfile.TemporaryDirectory(prefix=f"nanvix_{name}_") as tmpdir:
                     tmpdir_path = Path(tmpdir)
                     ramfs_dir = tmpdir_path / "ramfs"
@@ -478,16 +468,15 @@ class OpenSSLBuild(ZScript):
                     (ramfs_dir / "tmp").mkdir(exist_ok=True)
                     ramfs_img = tmpdir_path / f"rootfs_{name}.img"
 
-                    self.run(
+                    run(
                         str(mkramfs),
                         "-o",
                         str(ramfs_img),
                         str(ramfs_dir),
-                        docker=False,
                         timeout=60,
                     )
 
-                    self.run(
+                    run(
                         str(nanvixd),
                         "-bin-dir",
                         str(sysroot_path / "bin"),
@@ -495,7 +484,6 @@ class OpenSSLBuild(ZScript):
                         str(ramfs_img),
                         "--",
                         str(initrd),
-                        docker=False,
                         timeout=120,
                     )
                 print(f"OK   {name}")
