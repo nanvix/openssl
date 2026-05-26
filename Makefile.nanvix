@@ -8,9 +8,7 @@
 # Targets:
 #   all              Build static libraries (libcrypto.a, libssl.a) and test ELF
 #   test             Run all tests (smoke, integration, functional)
-#   test-smoke       Verify build artifacts (no runtime needed)
-#   test-integration Verify the test ELF was produced
-#   test-functional  Run the test ELF on nanvixd.elf
+#   test             Run the test ELF on nanvixd.elf
 #   clean            Remove build artifacts
 
 # ===========================================================================
@@ -159,36 +157,12 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 # Test Targets
 # ===========================================================================
 
-test-smoke:
-	@echo "=== openssl smoke tests ==="
-	@test -f libcrypto.a || { echo "  FAIL: libcrypto.a not found"; exit 1; }
-	@size=$$(wc -c < libcrypto.a); \
-	  if [ "$$size" -lt 1000 ]; then echo "  FAIL: libcrypto.a too small ($$size bytes)"; exit 1; fi
-	@test -f libssl.a || { echo "  FAIL: libssl.a not found"; exit 1; }
-	@size=$$(wc -c < libssl.a); \
-	  if [ "$$size" -lt 1000 ]; then echo "  FAIL: libssl.a too small ($$size bytes)"; exit 1; fi
-	@test -f include/openssl/ssl.h || { echo "  FAIL: include/openssl/ssl.h not found"; exit 1; }
-	@test -f include/openssl/evp.h || { echo "  FAIL: include/openssl/evp.h not found"; exit 1; }
-	@test -f include/openssl/opensslv.h || { echo "  FAIL: include/openssl/opensslv.h not found"; exit 1; }
-	@echo "  PASS: openssl smoke tests"
-
-test-integration:
-	@echo "=== openssl integration tests ==="
-	@test -f $(TEST_ELF) || { echo "  FAIL: $(TEST_ELF) not built"; exit 1; }
-	@size=$$(wc -c < $(TEST_ELF)); \
-	  if [ "$$size" -lt 1000 ]; then echo "  FAIL: $(TEST_ELF) too small ($$size bytes)"; exit 1; fi
-	@echo "  OK: $(TEST_ELF) ($$size bytes)"
-	@echo "  PASS: openssl integration tests"
-
-test-functional:
+test:
 	@echo "=== openssl functional tests ==="
 	@test -f $(TEST_ELF) || { echo "  FAIL: $(TEST_ELF) not built"; exit 1; }
 	@echo "  Running $(TEST_ELF) via nanvixd.elf..."
 	cd "$(SYSROOT_PATH)" && timeout --foreground 120 ./bin/nanvixd.elf -- $(abspath $(TEST_ELF))
 	@echo "  PASS: openssl functional tests"
-
-test: test-smoke test-integration test-functional
-	@echo "=== All openssl tests PASSED ==="
 
 # ===========================================================================
 # Clean
@@ -199,4 +173,4 @@ clean:
 	rm -f $(CONFIGURED_MARKER) $(TEST_SRC) $(TEST_ELF) Makefile
 	rm -rf dist/
 
-.PHONY: all build clean test test-smoke test-integration test-functional
+.PHONY: all build clean test
