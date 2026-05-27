@@ -245,12 +245,9 @@ class OpenSSLBuild(ZScript):
     def test(self) -> None:
         """Run the functional test (test ELF on ``nanvixd``).
 
-        The functional run is the only meaningful test: it boots the
-        cross-compiled ``openssl_nanvix_test.elf`` under ``nanvixd`` and
-        asserts the in-guest OpenSSL self-test prints ``PASS``. Earlier
-        "smoke" and "integration" phases only re-asserted what the build
-        step itself guarantees (build outputs present and non-empty) and
-        were dropped.
+        Boots the cross-compiled ``openssl_nanvix_test.elf`` under
+        ``nanvixd`` and asserts the in-guest OpenSSL self-test prints
+        ``PASS``.
 
         Only standalone deployment mode runs a real test; other modes
         require ``linuxd`` (Linux only) and are not yet wired up here.

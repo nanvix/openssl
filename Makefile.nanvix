@@ -7,9 +7,10 @@
 #
 # Targets:
 #   all              Build static libraries (libcrypto.a, libssl.a) and test ELF
-#   test             Run all tests (smoke, integration, functional)
-#   test             Run the test ELF on nanvixd.elf
 #   clean            Remove build artifacts
+#
+# Note: the functional test (boot the test ELF under nanvixd) is driven
+# by .nanvix/z.py (`./z test`); there is no `test` target here.
 
 # ===========================================================================
 # Global Variables
@@ -154,17 +155,6 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 	  -o $@
 
 # ===========================================================================
-# Test Targets
-# ===========================================================================
-
-test:
-	@echo "=== openssl functional tests ==="
-	@test -f $(TEST_ELF) || { echo "  FAIL: $(TEST_ELF) not built"; exit 1; }
-	@echo "  Running $(TEST_ELF) via nanvixd.elf..."
-	cd "$(SYSROOT_PATH)" && timeout --foreground 120 ./bin/nanvixd.elf -- $(abspath $(TEST_ELF))
-	@echo "  PASS: openssl functional tests"
-
-# ===========================================================================
 # Clean
 # ===========================================================================
 
@@ -173,4 +163,4 @@ clean:
 	rm -f $(CONFIGURED_MARKER) $(TEST_SRC) $(TEST_ELF) Makefile
 	rm -rf dist/
 
-.PHONY: all build clean test
+.PHONY: all build clean

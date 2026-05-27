@@ -57,26 +57,6 @@ pip install "$WHEEL_URL"
 ./z test
 ```
 
-Or build directly with Make (advanced):
-
-```bash
-# 1. Pull the Docker image
-docker pull ghcr.io/nanvix/toolchain-gcc:sha-34a3641
-# NOTE: If the image is private or you hit rate limits, authenticate first:
-#   docker login ghcr.io
-
-# 2. Download Nanvix sysroot
-curl -fsSL https://raw.githubusercontent.com/nanvix/nanvix/refs/heads/dev/scripts/get-nanvix.sh | bash -s -- nanvix-artifacts
-tar -xjf nanvix-artifacts/*microvm*single*.tar.bz2 -C nanvix-artifacts
-export NANVIX_HOME=$(find nanvix-artifacts -maxdepth 2 -type d -name "bin" -exec dirname {} \; | head -1)
-
-# 3. Build (Docker is used automatically if native toolchain is not found)
-make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME="$NANVIX_HOME"
-
-# 4. Run tests
-make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME="$NANVIX_HOME" test
-```
-
 Continue reading for detailed instructions.
 
 ---
@@ -128,34 +108,19 @@ pip install "$WHEEL_URL"
 ./z build
 ```
 
-### Using Docker (Direct Make)
+### Invoking Make Directly (Advanced)
 
-The Makefile supports automatic Docker fallback when the native toolchain is not available:
-
-```bash
-# Pull the Nanvix toolchain Docker image
-docker pull ghcr.io/nanvix/toolchain-gcc:sha-34a3641
-
-# Build (Docker is used automatically if native toolchain is not found)
-make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix/sysroot-debug
-```
-
-> **Note:** The sysroot (`NANVIX_HOME`) must contain `lib/libposix.a` and `lib/user.ld` from a Nanvix build.
-
-**Docker Fallback Behavior:**
-- If `NANVIX_TOOLCHAIN` points to a valid toolchain, it uses the native compiler
-- If the native toolchain is not found, it automatically uses Docker if available (auto-pulls the image if needed)
-- Use `CONFIG_NANVIX_DOCKER=y` to force Docker usage even when native toolchain exists
-- Use `NANVIX_DOCKER_IMAGE` to specify a custom Docker image (default: `ghcr.io/nanvix/toolchain-gcc:sha-34a3641`)
-- GHCR may require authentication (`docker login ghcr.io`) if the image is private or rate-limited
-
-### Using Native Toolchain
+`./z build` is the supported entrypoint: it manages the Docker toolchain image, sysroot path translation, and host/container artefact copy-back. `Makefile.nanvix` can also be invoked directly, but the caller is responsible for providing a working native toolchain and a Nanvix sysroot:
 
 ```bash
 export NANVIX_TOOLCHAIN=/path/to/toolchain  # Contains: bin/i686-nanvix-gcc
 export NANVIX_HOME=/path/to/nanvix          # Contains: lib/user.ld, lib/libposix.a
-make -f Makefile.nanvix CONFIG_NANVIX=y all
+make -f Makefile.nanvix \
+  PLATFORM=microvm PROCESS_MODE=standalone MEMORY_SIZE=128M \
+  NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="$NANVIX_TOOLCHAIN" all
 ```
+
+> **Note:** The sysroot (`NANVIX_HOME`) must contain `lib/libposix.a` and `lib/user.ld` from a Nanvix build.
 
 ### Build Outputs
 
@@ -173,30 +138,20 @@ After a successful build, you will have:
 
 ## Testing
 
-> **Important:** OpenSSL is built without command-line applications (`no-apps`), so testing focuses on verifying the static libraries are correctly built and can be linked.
+> **Important:** OpenSSL is built without command-line applications (`no-apps`). Testing boots a cross-compiled test ELF under `nanvixd` and verifies the static libraries link and run in-guest.
 
 ### Running the Test Suite
 
 ```bash
-# Run all tests
 ./z test
-
-# Or run specific test targets
-./z test -- test-smoke test-integration
-```
-
-Alternatively, invoke Make directly:
-
-```bash
-make -f Makefile.nanvix CONFIG_NANVIX=y NANVIX_HOME=/path/to/nanvix test
 ```
 
 ### Test Coverage
 
-The test target verifies:
-- Static libraries (`libcrypto.a`, `libssl.a`) exist
-- Libraries are valid archives with correct symbols
-- Libraries can be inspected with cross-toolchain `ar`
+The test target runs the functional test: it boots the cross-compiled
+`openssl_nanvix_test.elf` under `nanvixd` and asserts the in-guest
+OpenSSL self-test prints `PASS` (covers `libcrypto`/`libssl` linkage,
+SHA-256, and BIGNUM).
 
 ---
 
@@ -209,8 +164,8 @@ The following changes were made to support Nanvix.
 | Change | Description |
 |--------|-------------|
 | New Makefile | Added `Makefile.nanvix` for Nanvix cross-compilation |
-| Cross-compilation | Uses `CONFIG_NANVIX=y` option to enable Nanvix build |
-| Docker support | Automatic Docker fallback when native toolchain not available |
+| Cross-compilation | Driven by `PLATFORM`, `PROCESS_MODE`, `MEMORY_SIZE`, `NANVIX_HOME`, `NANVIX_TOOLCHAIN` |
+| Docker support | Cross-compile container orchestrated by `z.py` (image cached, artefacts copied back) |
 | Configure wrapper | Wraps `./Configure` with Nanvix cross-compilation settings |
 | Shared libraries | Disabled (`no-shared`) |
 | Applications | Disabled (`no-apps`) for library-only build |
