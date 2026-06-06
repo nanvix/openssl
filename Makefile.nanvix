@@ -6,8 +6,7 @@
 #    [INSTALL_PREFIX=<prefix>] [target]
 #
 # Targets:
-#   all              Build static libraries (libcrypto.a, libssl.a) and test ELF, then stage via install
-#   install          Stage built artifacts into LIB_OUT/INCLUDE_OUT/TEST_OUT
+#   all              Build static libraries (libcrypto.a, libssl.a) and test ELF
 #   clean            Remove build artifacts
 #
 # Note: the functional test (boot the test ELF under nanvixd) is driven
@@ -30,24 +29,23 @@ EXE = .elf
 TEST_SRC := openssl_nanvix_test.c
 TEST_ELF := openssl_nanvix_test$(EXE)
 
+# Shared library outputs.  Linked from the static archives via
+# `--whole-archive` after stripping the bss_log.o member that
+# references unimplemented POSIX `openlog`/`syslog`/`closelog` (see
+# Nanvix newlib does not implement the syslog client API; OpenSSL's
+# BIO_s_log -- which we don't use -- is the only consumer).
+LIBCRYPTO_SO := libcrypto.so
+LIBSSL_SO    := libssl.so
+
 # Marker file produced by ./Configure.
 CONFIGURED_MARKER := .nanvix-configured
 
-_NANVIX_DOCKER_BUILD_GOALS := all build install $(CONFIGURED_MARKER) $(TEST_ELF)
+_NANVIX_DOCKER_BUILD_GOALS := all build $(CONFIGURED_MARKER) $(TEST_ELF) \
+                              $(LIBCRYPTO_SO) $(LIBSSL_SO)
 _NANVIX_GOALS := $(or $(MAKECMDGOALS),$(.DEFAULT_GOAL))
 
 # Ensure required variables are defined.
-_REQUIRED := PLATFORM \
-    PROCESS_MODE \
-    MEMORY_SIZE \
-    NANVIX_HOME \
-    NANVIX_TOOLCHAIN \
-    NANVIX_ROOT \
-    OUT_DIR \
-    DIST_DIR \
-    LIB_OUT \
-    INCLUDE_OUT \
-    TEST_OUT
+_REQUIRED := PLATFORM PROCESS_MODE MEMORY_SIZE NANVIX_HOME NANVIX_TOOLCHAIN
 ifneq ($(filter-out clean,$(_NANVIX_GOALS)),)
   $(foreach v,$(_REQUIRED),\
     $(if $($v),,$(error Required variable $v not set))\
@@ -101,9 +99,10 @@ CONFIGURE_OPTS = \
 	--openssldir="$(INSTALL_PREFIX)" \
 	--prefix="$(INSTALL_PREFIX)" \
 	nanvix \
-	no-shared \
+	shared \
+	no-pinshared \
+	enable-trace \
 	threads \
-	no-dso \
 	no-apps \
 	no-docs \
 	no-rdrand \
@@ -115,7 +114,7 @@ CONFIGURE_OPTS = \
 # Build Targets
 # ===========================================================================
 
-all: build $(TEST_ELF) install
+all: build $(LIBCRYPTO_SO) $(LIBSSL_SO) $(TEST_ELF)
 
 $(CONFIGURED_MARKER):
 	$(CONFIGURE_ENV) ./Configure $(CONFIGURE_OPTS)
@@ -123,6 +122,57 @@ $(CONFIGURED_MARKER):
 
 build: $(CONFIGURED_MARKER)
 	$(MAKE) -j$$(nproc) all
+	@# Strip bss_log.o so consumers can use --whole-archive libcrypto.a.
+	@# bss_log.o is the implementation of OpenSSL's BIO_s_log -- a syslog
+	@# BIO backend that we don't use and that references the POSIX
+	@# `openlog`/`syslog`/`closelog` symbols Nanvix newlib does not
+	@# provide.  Under normal archive selection nothing references
+	@# BIO_s_log so bss_log.o is never pulled; under --whole-archive
+	@# every member gets pulled and the link fails with three undefs.
+	@# Idempotent.
+	@if $(AR) t libcrypto.a 2>/dev/null | grep -q '^libcrypto-lib-bss_log\.o$$'; then \
+	  echo "  Stripping libcrypto-lib-bss_log.o from libcrypto.a"; \
+	  $(AR) d libcrypto.a libcrypto-lib-bss_log.o; \
+	  $(RANLIB) libcrypto.a; \
+	fi
+
+# Build libcrypto.so from the (PIC-clean) static archive.  OpenSSL's
+# x86 sources are already position-independent, so no -fPIC at compile
+# time is required.  libposix/libc/libm symbols are left UND and bind
+# at dlopen time against the host executable's .dynsym (same model
+# already used by libxml2.so / libffi.so on Nanvix).
+#
+# `-lgcc` is required because OpenSSL's bignum / hash arithmetic uses
+# 64-bit operations on 32-bit i686, and the resulting calls to libgcc
+# helpers (__udivdi3, __umoddi3, ...) cannot be resolved against the
+# host executable at dlopen time -- libgcc marks them hidden, so they
+# are absent from the host's .dynsym.  Embedding `-lgcc` ships those
+# leaf helpers inside libcrypto.so.  Only stateless arithmetic helpers
+# are pulled in; the structural check below asserts that no stateful
+# libgcc symbols (frame registry, unwinder, ifunc CPU dispatch state,
+# emutls, ...) leak in.
+$(LIBCRYPTO_SO): libcrypto.a
+	$(CC) -shared -fPIC -nostdlib \
+	    -Wl,-soname,libcrypto.so -Wl,-z,noexecstack \
+	    -Wl,--whole-archive libcrypto.a -Wl,--no-whole-archive \
+	    -lgcc \
+	    -o $@
+	@echo "  OK: $@ ($$(wc -c < $@) bytes)"
+	$(call check_no_stateful_libgcc,$@)
+
+# libssl.so depends on libcrypto.so via DT_NEEDED.  Order matters:
+# libcrypto.so must exist before libssl.so links, so the linker
+# resolves -lcrypto against the .so rather than the .a (which would
+# bundle libcrypto into libssl.so and defeat the deduplication).
+$(LIBSSL_SO): libssl.a $(LIBCRYPTO_SO)
+	$(CC) -shared -fPIC -nostdlib \
+	    -Wl,-soname,libssl.so -Wl,-z,noexecstack \
+	    -Wl,--whole-archive libssl.a -Wl,--no-whole-archive \
+	    -L. -lcrypto \
+	    -lgcc \
+	    -o $@
+	@echo "  OK: $@ ($$(wc -c < $@) bytes)"
+	$(call check_no_stateful_libgcc,$@)
 
 # Generate the inline test program source.
 $(TEST_SRC):
@@ -157,6 +207,81 @@ $(TEST_SRC):
 libcrypto.a libssl.a include/openssl/opensslv.h:
 	@echo "  FAIL: $@ not found; run 'build' first"; exit 1
 
+# Stateful libgcc symbols that MUST NOT be duplicated across DSOs in
+# a static-only environment (Nanvix does not ship libgcc_s.so).
+#
+# NOTE: this check is a WORKAROUND.  The long-term fix is to
+# eliminate the libgcc dependency from our .so files entirely (e.g.
+# by shipping a real libgcc_s.so for Nanvix, or by re-exporting the
+# helpers from the host executable's .dynsym via an explicit
+# `-Wl,-u<symbol> + visibility=default` wrapper).  Both are
+# substantially more involved than this regex check; the check
+# exists to fail-fast at build time on regressions while we work
+# towards the structural fix.
+#
+# Three tiers, all enforced equally:
+#
+# Tier 1 -- correctness-critical (crashes / wrong unwind / wrong CPU
+# dispatch / TLS aliasing / SjLj chain break):
+#   - Frame-registration registry (unwind-dw2-fde.c)
+#   - Core unwinder + _Unwind_Get*/Set* (unwind-dw2.c)
+#   - __gcc_personality_v0 / _sj0 (LSDA reader)
+#   - i386 CPU feature detection (__cpu_model / __cpu_features2 /
+#     __cpu_indicator_init)
+#   - emutls (emutls.c)
+#   - SjLj exception chain (unwind-sjlj.c)
+#
+# Tier 2 -- gcov profiling state (libgcov-driver.c).  Not currently
+# enabled on Nanvix, but listed to catch surprise enablement (e.g.
+# someone flips on -fprofile-arcs for a benchmark build):
+#   - __gcov_master / __gcov_error_file / __gcov_kvp_dynamic_pool*
+#   - __gcov_{init,exit,dump,reset} mutators
+#   - (__gcov_root is intentionally per-DSO; NOT blocked)
+#
+# Tier 3 -- split-stack state (generic-morestack*.c).  Not currently
+# enabled (Nanvix uses fixed stacks), but listed for the same reason
+# as Tier 2:
+#   - __morestack* / __generic_morestack* / __splitstack_*
+#
+# Regex is defined as a single physical line.  An earlier multi-line
+# form using GNU make backslash-continuation expanded to a regex
+# with embedded spaces between every alternative, which silently
+# matched nothing and turned the entire check into a no-op.
+LIBGCC_STATEFUL_RE := ^(__register_frame(_info(_bases|_table(_bases)?)?|_table)?|__deregister_frame(_info(_bases)?)?|__frame_state_for|_Unwind_(Find_FDE|RaiseException|Resume(_or_Rethrow)?|ForcedUnwind|Backtrace|DeleteException|FindEnclosingFunction|Get(GR|IP(Info)?|CFA|LanguageSpecificData|RegionStart|TextRelBase|DataRelBase)|Set(GR|IP))|__gcc_personality_(v0|sj0)|__cpu_(model|indicator_init|features2)|__emutls_(get_address|register_common)|_Unwind_SjLj_(Register|Unregister|RaiseException|ForcedUnwind|Resume(_or_Rethrow)?)|__gcov_(init|exit|dump|reset|master|error_file|kvp_dynamic_pool(_index|_size)?)|__morestack(_block_signals|_unblock_signals|_fail|_release_segments|_load_mmap|_allocate_stack_space|_segments|_current_segment|_initial_sp)?|__generic_(morestack(_set_initial_sp)?|releasestack|findstack)|__splitstack_(find|block_signals|getcontext|setcontext|makecontext|resetcontext|releasecontext|block_signals_context|find_context))$$
+
+# Assert that a .so does not contain any Tier-1 stateful libgcc
+# symbols (defined or undefined; we want zero references too,
+# because resolving a stateful symbol against a different DSO's copy
+# would still create the state-coherency hazard).
+#
+# $(1): path to the .so to check.
+define check_no_stateful_libgcc
+@echo "  Checking $(1) for stateful libgcc symbols..."
+@BAD_DEF=$$($(NANVIX_TOOLCHAIN)/bin/i686-nanvix-nm --defined-only $(1) 2>/dev/null \
+              | awk '{print $$NF}' | grep -E '$(LIBGCC_STATEFUL_RE)' || true); \
+ BAD_UND=$$($(NANVIX_TOOLCHAIN)/bin/i686-nanvix-nm --undefined-only $(1) 2>/dev/null \
+              | awk '{print $$NF}' | grep -E '$(LIBGCC_STATEFUL_RE)' || true); \
+ if [ -n "$$BAD_DEF" ]; then \
+   echo "  FAIL: $(1) bundles stateful libgcc symbols (defined):"; \
+   echo "$$BAD_DEF" | sed 's/^/    /'; \
+   echo "  These carry process-shared state and must not be"; \
+   echo "  duplicated across DSOs."; \
+   exit 1; \
+ fi; \
+ if [ -n "$$BAD_UND" ]; then \
+   echo "  FAIL: $(1) references stateful libgcc symbols (UND):"; \
+   echo "$$BAD_UND" | sed 's/^/    /'; \
+   echo "  These would resolve at dlopen time against whichever"; \
+   echo "  DSO loaded its own copy first, creating state-coherency"; \
+   echo "  hazards.  The fix is to export them from the host"; \
+   echo "  executable via an explicit -Wl,-u + visibility=default"; \
+   echo "  wrapper, or to remove the source dependency that pulled"; \
+   echo "  them in."; \
+   exit 1; \
+ fi; \
+ echo "  OK: $(1) free of stateful libgcc symbols"
+endef
+
 $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 	$(CC) -O2 \
 	  -I$(CURDIR)/include \
@@ -165,14 +290,6 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 	  $(NANVIX_LDFLAGS) $(NANVIX_LIBS) \
 	  -o $@
 
-# Stage built artifacts into the release/test output tree so that
-# `./z release` (which packages release_dir()) can find them.
-install: libcrypto.a libssl.a include/openssl/opensslv.h $(TEST_ELF)
-	@mkdir -p $(LIB_OUT) $(INCLUDE_OUT)/openssl $(TEST_OUT)
-	cp -f libcrypto.a libssl.a   $(LIB_OUT)/
-	cp -f include/openssl/*.h    $(INCLUDE_OUT)/openssl/
-	cp -f $(TEST_ELF)            $(TEST_OUT)/
-
 # ===========================================================================
 # Clean
 # ===========================================================================
@@ -180,6 +297,6 @@ install: libcrypto.a libssl.a include/openssl/opensslv.h $(TEST_ELF)
 clean:
 	-$(MAKE) clean 2>/dev/null || true
 	rm -f $(CONFIGURED_MARKER) $(TEST_SRC) $(TEST_ELF) Makefile
-	rm -rf $(OUT_DIR) dist/
+	rm -rf dist/
 
-.PHONY: all build install clean
+.PHONY: all build clean
