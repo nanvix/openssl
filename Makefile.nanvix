@@ -6,7 +6,8 @@
 #    [INSTALL_PREFIX=<prefix>] [target]
 #
 # Targets:
-#   all              Build static libraries (libcrypto.a, libssl.a) and test ELF
+#   all              Build static libraries (libcrypto.a, libssl.a) and test ELF, then stage via install
+#   install          Stage built artifacts into LIB_OUT/INCLUDE_OUT/TEST_OUT
 #   clean            Remove build artifacts
 #
 # Note: the functional test (boot the test ELF under nanvixd) is driven
@@ -32,11 +33,21 @@ TEST_ELF := openssl_nanvix_test$(EXE)
 # Marker file produced by ./Configure.
 CONFIGURED_MARKER := .nanvix-configured
 
-_NANVIX_DOCKER_BUILD_GOALS := all build $(CONFIGURED_MARKER) $(TEST_ELF)
+_NANVIX_DOCKER_BUILD_GOALS := all build install $(CONFIGURED_MARKER) $(TEST_ELF)
 _NANVIX_GOALS := $(or $(MAKECMDGOALS),$(.DEFAULT_GOAL))
 
 # Ensure required variables are defined.
-_REQUIRED := PLATFORM PROCESS_MODE MEMORY_SIZE NANVIX_HOME NANVIX_TOOLCHAIN
+_REQUIRED := PLATFORM \
+    PROCESS_MODE \
+    MEMORY_SIZE \
+    NANVIX_HOME \
+    NANVIX_TOOLCHAIN \
+    NANVIX_ROOT \
+    OUT_DIR \
+    DIST_DIR \
+    LIB_OUT \
+    INCLUDE_OUT \
+    TEST_OUT
 ifneq ($(filter-out clean,$(_NANVIX_GOALS)),)
   $(foreach v,$(_REQUIRED),\
     $(if $($v),,$(error Required variable $v not set))\
@@ -104,7 +115,7 @@ CONFIGURE_OPTS = \
 # Build Targets
 # ===========================================================================
 
-all: build $(TEST_ELF)
+all: build $(TEST_ELF) install
 
 $(CONFIGURED_MARKER):
 	$(CONFIGURE_ENV) ./Configure $(CONFIGURE_OPTS)
@@ -154,6 +165,14 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 	  $(NANVIX_LDFLAGS) $(NANVIX_LIBS) \
 	  -o $@
 
+# Stage built artifacts into the release/test output tree so that
+# `./z release` (which packages release_dir()) can find them.
+install: libcrypto.a libssl.a include/openssl/opensslv.h $(TEST_ELF)
+	@mkdir -p $(LIB_OUT) $(INCLUDE_OUT)/openssl $(TEST_OUT)
+	cp -f libcrypto.a libssl.a   $(LIB_OUT)/
+	cp -f include/openssl/*.h    $(INCLUDE_OUT)/openssl/
+	cp -f $(TEST_ELF)            $(TEST_OUT)/
+
 # ===========================================================================
 # Clean
 # ===========================================================================
@@ -161,6 +180,6 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 clean:
 	-$(MAKE) clean 2>/dev/null || true
 	rm -f $(CONFIGURED_MARKER) $(TEST_SRC) $(TEST_ELF) Makefile
-	rm -rf dist/
+	rm -rf $(OUT_DIR) dist/
 
-.PHONY: all build clean
+.PHONY: all build install clean
