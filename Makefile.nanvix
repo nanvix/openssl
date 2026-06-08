@@ -287,7 +287,10 @@ $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
 	  -I$(CURDIR)/include \
 	  $(TEST_SRC) \
 	  -L$(CURDIR) -lssl -lcrypto \
-	  $(NANVIX_LDFLAGS) $(NANVIX_LIBS) \
+	  $(NANVIX_LDFLAGS) \
+	  -Wl,--allow-multiple-definition \
+	  $(wildcard $(SYSROOT_PATH)/lib/libnvx_crt0.a) \
+	  $(NANVIX_LIBS) \
 	  -o $@
 
 # ===========================================================================
