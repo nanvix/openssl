@@ -83,6 +83,7 @@ RANLIB := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ranlib
 CXX := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-g++
 NANVIX_LDFLAGS := -T$(SYSROOT_PATH)/lib/user.ld -static -Wl,-z,noexecstack
 NANVIX_LIBS := -Wl,--start-group \
+  $(SYSROOT_PATH)/lib/libnvx_crt0.a \
   $(SYSROOT_PATH)/lib/libposix.a \
   $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libc.a \
   $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libm.a \
