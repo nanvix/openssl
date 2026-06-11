@@ -81,8 +81,15 @@ CC := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-gcc
 AR := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ar
 RANLIB := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ranlib
 CXX := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-g++
-NANVIX_LDFLAGS := -T$(SYSROOT_PATH)/lib/user.ld -static -Wl,-z,noexecstack
+# Since Nanvix 0.16.19, process startup (`_start`) lives in libnvx_crt0.a; it
+# drives `__nanvix_libc_start_main` in libposix.a. It must be linked first so
+# its strong `_start` overrides the toolchain's weak no-op stub (otherwise the
+# guest never reaches main and hangs). The wildcard keeps this a no-op on older
+# Nanvix releases that do not ship libnvx_crt0.a. libnvx_crt0.a and libposix.a
+# share some kcall objects, so allow multiple definitions to resolve the overlap.
+NANVIX_LDFLAGS := -T$(SYSROOT_PATH)/lib/user.ld -static -Wl,-z,noexecstack -Wl,--allow-multiple-definition
 NANVIX_LIBS := -Wl,--start-group \
+  $(wildcard $(SYSROOT_PATH)/lib/libnvx_crt0.a) \
   $(SYSROOT_PATH)/lib/libposix.a \
   $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libc.a \
   $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libm.a \
