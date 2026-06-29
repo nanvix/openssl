@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -315,14 +316,19 @@ class OpenSSLBuild(ZScript):
         Python keeps the failure mode consistent across platforms/modes
         (Linux/Windows, microvm/standalone) and points the user at the
         right remediation without needing to parse make output.
+
+        On windows-ci the workflow downloads test artefacts into
+        ``test_out()`` (the windows-test job has no preceding `./z build`
+        on the Windows runner), so we accept either location.
         """
-        elf = repo_root() / _TEST_ELF
-        if not elf.is_file():
-            log.fatal(
-                f"test: missing build artefact: {_TEST_ELF}",
-                code=_EXIT_BUILD,
-                hint="Run `./z build` first.",
-            )
+        for candidate in (test_out() / _TEST_ELF, repo_root() / _TEST_ELF):
+            if candidate.is_file():
+                return
+        log.fatal(
+            f"test: missing build artefact: {_TEST_ELF}",
+            code=_EXIT_BUILD,
+            hint="Run `./z build` first.",
+        )
 
     # ------------------------------------------------------------------
     # Functional tests
@@ -335,12 +341,30 @@ class OpenSSLBuild(ZScript):
         make_initrd, and a ramfs providing /tmp for test I/O.
         """
         elf = repo_root() / _TEST_ELF
-        if not elf.is_file():
+        # Source _TEST_ELF from `test_out()` (the windows-ci artifact
+        # overlay location, populated by `_stage_artifacts_elf_so` in
+        # nanvix_scripts and by the canonical workflow's download-artifact
+        # step at `.nanvix/out/test/`) with repo_root() as legacy fallback.
+        # `make_initrd` in zutils v0.13.0 hardcodes `repo_root() / app`,
+        # so stage a copy at the repo root when the binary is discovered
+        # elsewhere. `staged_created` is False whenever the destination
+        # pre-existed, so cleanup never deletes a developer's build output.
+        elf_src: Path | None = None
+        for candidate in (test_out() / _TEST_ELF, elf):
+            if candidate.is_file():
+                elf_src = candidate
+                break
+        if elf_src is None:
             log.fatal(
                 f"{_TEST_ELF} not found.",
                 code=_EXIT_BUILD,
                 hint="Run `./z build` first.",
             )
+        staged_created = False
+        if elf_src.resolve() != elf.resolve():
+            preexisted = elf.exists()
+            shutil.copy2(elf_src, elf)
+            staged_created = not preexisted
 
         sysroot = self._sysroot_path()
         # Host tools are .exe on Windows, .elf elsewhere. The guest test
@@ -389,6 +413,8 @@ class OpenSSLBuild(ZScript):
         finally:
             if initrd.exists():
                 initrd.unlink()
+            if staged_created:
+                elf.unlink(missing_ok=True)
 
         log.info(
             f"  PASS: openssl library test {self.config.deployment_mode} (exit code 0)"
