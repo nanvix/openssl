@@ -14,8 +14,10 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -29,15 +31,6 @@ from nanvix_zutil import (
     log,
     make_initrd,
     run,
-)
-from nanvix_zutil.paths import (
-    dist_dir,
-    include_out,
-    lib_out,
-    nanvix_root,
-    out_dir,
-    repo_root,
-    test_out,
 )
 
 _EXIT_BUILD: int = EXIT_BUILD_FAILURE
@@ -62,9 +55,10 @@ _DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-gcc:sha-34a3641"
 _TEST_ELF = "openssl_nanvix_test.elf"
 
 # Public headers generated from ``include/openssl/*.h.in`` templates by
-# OpenSSL's ``Configure`` step.  Listed for documentation and for
-# inclusion in the install-staged release tree (the install rule globs
-# ``include/openssl/*.h`` so the list is informational here).
+# OpenSSL's ``Configure`` step. These are not present in the source tree
+# and must be copied back from the container after the build so that
+# host-side release packaging (which ships every ``include/openssl/*.h``)
+# produces complete tarballs.
 _GENERATED_HEADERS: list[str] = [
     "asn1.h",
     "asn1t.h",
@@ -97,13 +91,17 @@ _GENERATED_HEADERS: list[str] = [
 ]
 
 # Files produced inside the Docker tar-copy build dir (Windows path) that
-# must be copied back to the host workspace.  Only the test ELF is needed
-# at the repo root post-build: it is the test target's input and is
-# resolved by ``make_initrd`` relative to ``repo_root()``.  Release-staged
-# artifacts (libraries, headers, test ELF copy) are covered by
-# ``_staged_output_files()``.
+# must be copied back to the host workspace so subsequent host-side steps
+# (tests, release packaging) can find them. Paths are relative to the
+# workspace root (i.e. ``/tmp/build`` inside the container, ``repo_root``
+# on the host).
 _BUILD_OUTPUTS: list[str] = [
+    "libcrypto.a",
+    "libssl.a",
+    "libcrypto.so",
+    "libssl.so",
     _TEST_ELF,
+    *(f"include/openssl/{h}" for h in _GENERATED_HEADERS),
 ]
 
 IS_WINDOWS = sys.platform == "win32"
@@ -127,26 +125,7 @@ class OpenSSLBuild(ZScript):
         itself is the build directory).
         """
         cfg = super().docker_config(image)
-        return dataclasses.replace(
-            cfg,
-            output_files=list(_BUILD_OUTPUTS) + self._staged_output_files(),
-        )
-
-    def _staged_output_files(self) -> list[str]:
-        """Return install-staged artifact paths (relative to repo_root())
-        so Windows tar-copy mode also copies them back to the host.
-        """
-        root = repo_root()
-        staged: list[str] = [
-            str((lib_out() / "libcrypto.a").relative_to(root)),
-            str((lib_out() / "libssl.a").relative_to(root)),
-            str((test_out() / _TEST_ELF).relative_to(root)),
-        ]
-        staged.extend(
-            str((include_out() / "openssl" / h).relative_to(root))
-            for h in _GENERATED_HEADERS
-        )
-        return staged
+        return dataclasses.replace(cfg, output_files=list(_BUILD_OUTPUTS))
 
     def _ensure_docker_perl(self) -> None:
         """Ensure the Docker image has Perl with FindBin (needed by Configure).
@@ -225,9 +204,6 @@ class OpenSSLBuild(ZScript):
             self.docker.translate_path(Path(sysroot)) if self.docker else Path(sysroot)
         )
 
-        def translate(p: Path):
-            return self.docker.translate_path(p) if self.docker else p
-
         args = [
             "make",
             "-f",
@@ -241,12 +217,6 @@ class OpenSSLBuild(ZScript):
                 f"{_MAKE_VAR_PLATFORM}={self.config.machine}",
                 f"{_MAKE_VAR_PROCESS_MODE}={self.config.deployment_mode}",
                 f"{_MAKE_VAR_MEMORY_SIZE}={self.config.memory_size}",
-                f"NANVIX_ROOT={translate(nanvix_root())}",
-                f"OUT_DIR={translate(out_dir())}",
-                f"DIST_DIR={translate(dist_dir())}",
-                f"LIB_OUT={translate(lib_out())}",
-                f"INCLUDE_OUT={translate(include_out())}",
-                f"TEST_OUT={translate(test_out())}",
             ]
         )
 
@@ -270,7 +240,7 @@ class OpenSSLBuild(ZScript):
         # Build libraries and test binary in one pass.
         run(
             *self._make_args("all", _TEST_ELF),
-            cwd=repo_root(),
+            cwd=self.repo_root,
             docker=self.docker,
         )
 
@@ -294,6 +264,67 @@ class OpenSSLBuild(ZScript):
         self._require_build_artifacts()
         self._run_functional_standalone()
 
+    def release(self) -> None:
+        """Package the release tarball natively (no Docker).
+
+        Uses Python's tarfile module for gzip compression.
+        """
+        repo = self.repo_root
+        libcrypto = repo / "libcrypto.a"
+        libssl = repo / "libssl.a"
+        libcrypto_so = repo / "libcrypto.so"
+        libssl_so = repo / "libssl.so"
+        headers_dir = repo / "include" / "openssl"
+        test_elf = repo / _TEST_ELF
+
+        for path in (libcrypto, libssl, libcrypto_so, libssl_so, headers_dir):
+            if not path.exists():
+                log.fatal(
+                    f"release: missing artefact {path}",
+                    code=_EXIT_BUILD,
+                    hint="Run `./z build` first.",
+                )
+
+        artifact = (
+            f"openssl-{self.config.machine}"
+            f"-{self.config.deployment_mode}"
+            f"-{self.config.memory_size}"
+        )
+        dist_dir = repo / "dist"
+        staging = dist_dir / artifact
+        sysroot = staging / "sysroot"
+
+        # Fresh stage every time.
+        if staging.exists():
+            shutil.rmtree(staging)
+        (sysroot / "lib").mkdir(parents=True)
+        (sysroot / "include" / "openssl").mkdir(parents=True)
+        (sysroot / "bin").mkdir(parents=True)
+
+        # Copy libraries.
+        shutil.copy2(libcrypto, sysroot / "lib" / "libcrypto.a")
+        shutil.copy2(libssl, sysroot / "lib" / "libssl.a")
+        shutil.copy2(libcrypto_so, sysroot / "lib" / "libcrypto.so")
+        shutil.copy2(libssl_so, sysroot / "lib" / "libssl.so")
+
+        # Copy headers.
+        for h in sorted(headers_dir.glob("*.h")):
+            shutil.copy2(h, sysroot / "include" / "openssl" / h.name)
+
+        # Copy test ELF if available.
+        if test_elf.is_file():
+            shutil.copy2(test_elf, sysroot / "bin" / test_elf.name)
+
+        # Build gzip-compressed tarball using Python's tarfile module.
+        tarball = dist_dir / f"{artifact}.tar.gz"
+        if tarball.exists():
+            tarball.unlink()
+        with tarfile.open(tarball, "w:gz") as tf:
+            tf.add(sysroot, arcname="sysroot")
+        log.info(f"Wrote release tarball: {tarball}")
+
+        self._verify_release(tarball)
+
     def clean(self) -> None:
         """Remove build artifacts."""
         run(
@@ -301,7 +332,7 @@ class OpenSSLBuild(ZScript):
             "-f",
             "Makefile.nanvix",
             "clean",
-            cwd=repo_root(),
+            cwd=self.repo_root,
         )
 
     # ------------------------------------------------------------------
@@ -316,7 +347,7 @@ class OpenSSLBuild(ZScript):
         (Linux/Windows, microvm/standalone) and points the user at the
         right remediation without needing to parse make output.
         """
-        elf = repo_root() / _TEST_ELF
+        elf = self.repo_root / _TEST_ELF
         if not elf.is_file():
             log.fatal(
                 f"test: missing build artefact: {_TEST_ELF}",
@@ -334,7 +365,7 @@ class OpenSSLBuild(ZScript):
         Creates an initrd bundling the test ELF with system daemons via
         make_initrd, and a ramfs providing /tmp for test I/O.
         """
-        elf = repo_root() / _TEST_ELF
+        elf = self.repo_root / _TEST_ELF
         if not elf.is_file():
             log.fatal(
                 f"{_TEST_ELF} not found.",
@@ -359,7 +390,7 @@ class OpenSSLBuild(ZScript):
         log.info("=== openssl functional tests ===")
         log.info(f"  Running {_TEST_ELF} via nanvixd standalone...")
 
-        initrd = make_initrd(self, _TEST_ELF, test=True)
+        initrd = make_initrd(self, _TEST_ELF)
         try:
             with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
                 tmp_path = Path(tmp)
@@ -406,6 +437,38 @@ class OpenSSLBuild(ZScript):
                 hint="Run `./z setup` first.",
             )
         return Path(sysroot)
+
+    # ------------------------------------------------------------------
+    # Release verification
+    # ------------------------------------------------------------------
+
+    def _verify_release(self, tarball: Path) -> None:
+        """Verify the release tarball contains expected paths."""
+        required = {
+            "sysroot/lib/libcrypto.a",
+            "sysroot/lib/libssl.a",
+            "sysroot/lib/libcrypto.so",
+            "sysroot/lib/libssl.so",
+        }
+        with tarfile.open(tarball, "r:gz") as tf:
+            members = set(tf.getnames())
+        missing = sorted(required - members)
+        if missing:
+            log.fatal(
+                f"release: tarball missing required paths: {missing}",
+                code=_EXIT_BUILD,
+                hint=f"Tarball: {tarball}",
+            )
+        if not any(
+            m.startswith("sysroot/include/openssl/") and m != "sysroot/include/openssl"
+            for m in members
+        ):
+            log.fatal(
+                "release: tarball has no entries under sysroot/include/openssl/",
+                code=_EXIT_BUILD,
+                hint=f"Tarball: {tarball}",
+            )
+        log.info(f"Verified release tarball: {tarball}")
 
 
 if __name__ == "__main__":
