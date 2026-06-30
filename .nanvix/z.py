@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -98,10 +97,10 @@ _GENERATED_HEADERS: list[str] = [
 ]
 
 # Files produced inside the Docker tar-copy build dir (Windows path) that
-# must be copied back to the host workspace.  Only the test ELF is needed
-# at the repo root post-build: it is the test target's input and is
-# resolved by ``make_initrd`` relative to ``repo_root()``.  Release-staged
-# artifacts (libraries, headers, test ELF copy) are covered by
+# must be copied back to the host workspace.  The test ELF is kept at the
+# repo root post-build so ``_require_build_artifacts`` finds it without
+# depending on the install-staged copy.  Release-staged artifacts
+# (libraries, headers, test ELF copy) are covered by
 # ``_staged_output_files()``.
 _BUILD_OUTPUTS: list[str] = [
     _TEST_ELF,
@@ -340,17 +339,12 @@ class OpenSSLBuild(ZScript):
         Creates an initrd bundling the test ELF with system daemons via
         make_initrd, and a ramfs providing /tmp for test I/O.
         """
-        elf = repo_root() / _TEST_ELF
         # Source _TEST_ELF from `test_out()` (the windows-ci artifact
         # overlay location, populated by `_stage_artifacts_elf_so` in
         # nanvix_scripts and by the canonical workflow's download-artifact
         # step at `.nanvix/out/test/`) with repo_root() as legacy fallback.
-        # `make_initrd` in zutils v0.13.0 hardcodes `repo_root() / app`,
-        # so stage a copy at the repo root when the binary is discovered
-        # elsewhere. `staged_created` is False whenever the destination
-        # pre-existed, so cleanup never deletes a developer's build output.
         elf_src: Path | None = None
-        for candidate in (test_out() / _TEST_ELF, elf):
+        for candidate in (test_out() / _TEST_ELF, repo_root() / _TEST_ELF):
             if candidate.is_file():
                 elf_src = candidate
                 break
@@ -360,11 +354,6 @@ class OpenSSLBuild(ZScript):
                 code=_EXIT_BUILD,
                 hint="Run `./z build` first.",
             )
-        staged_created = False
-        if elf_src.resolve() != elf.resolve():
-            preexisted = elf.exists()
-            shutil.copy2(elf_src, elf)
-            staged_created = not preexisted
 
         sysroot = self._sysroot_path()
         # Host tools are .exe on Windows, .elf elsewhere. The guest test
@@ -383,7 +372,7 @@ class OpenSSLBuild(ZScript):
         log.info("=== openssl functional tests ===")
         log.info(f"  Running {_TEST_ELF} via nanvixd standalone...")
 
-        initrd = make_initrd(self, _TEST_ELF, test=True)
+        initrd = make_initrd(self, elf_src, test_out())
         try:
             with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
                 tmp_path = Path(tmp)
@@ -413,8 +402,6 @@ class OpenSSLBuild(ZScript):
         finally:
             if initrd.exists():
                 initrd.unlink()
-            if staged_created:
-                elf.unlink(missing_ok=True)
 
         log.info(
             f"  PASS: openssl library test {self.config.deployment_mode} (exit code 0)"
