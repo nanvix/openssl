@@ -56,7 +56,7 @@ _MAKE_VAR_INSTALL_PREFIX = "INSTALL_PREFIX"
 _DEFAULT_INSTALL_PREFIX = "/sysroot"
 
 # Docker image for cross-compilation (must match Makefile.nanvix default).
-_DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-gcc:sha-34a3641"
+_DOCKER_IMAGE = "ghcr.io/nanvix/llvm-project:ca7933e47d3a"
 
 # Test binary name produced by the Makefile.
 _TEST_ELF = "openssl_nanvix_test.elf"
@@ -116,6 +116,21 @@ class OpenSSLBuild(ZScript):
         """Return the Docker image for cross-compilation."""
         return _DOCKER_IMAGE
 
+    def sysroot_required_files(self) -> list[str]:
+        """Return the sysroot files required for the current platform/mode.
+
+        Nanvix 0.18.x (the LLVM-era runtime paired with the
+        ``llvm-project`` toolchain image) merged the former standalone
+        ``libposix.a`` into a single ``libc.a`` C library, so the base
+        class's requirement on ``lib/libposix.a`` no longer holds.  Swap
+        that entry for ``lib/libc.a`` while keeping every other required
+        file from the base implementation.
+        """
+        return [
+            "lib/libc.a" if f == "lib/libposix.a" else f
+            for f in super().sysroot_required_files()
+        ]
+
     def docker_config(self, image: str) -> DockerConfig:
         """Extend the default Docker config with build outputs.
 
@@ -151,12 +166,15 @@ class OpenSSLBuild(ZScript):
     def _ensure_docker_perl(self) -> None:
         """Ensure the Docker image has Perl with FindBin (needed by Configure).
 
-        The base toolchain image ships only ``perl-base``.  OpenSSL's
-        ``./Configure`` requires the full ``perl`` package (``FindBin``).
-        When Docker is active, this method builds a thin derived image
-        that adds ``perl`` on top of the base image, then switches
-        ``self.docker`` to use it.  The derived image is cached locally
-        so subsequent calls are instant.
+        OpenSSL's ``./Configure`` requires the full ``perl`` package
+        (``FindBin``), not just ``perl-base``.  The ``llvm-project``
+        toolchain image already ships a complete Perl, so on that image
+        the FindBin probe below succeeds and this method is a no-op.  It
+        is retained as a safety net: when run against a base image that
+        lacks ``FindBin`` (e.g. a minimal toolchain), it builds a thin
+        derived image that adds ``perl`` on top of the base image and
+        switches ``self.docker`` to use it.  The derived image is cached
+        locally so subsequent calls are instant.
         """
         if not self.docker:  # type: ignore[reportUnknownMemberType]
             return
@@ -281,8 +299,9 @@ class OpenSSLBuild(ZScript):
         ``nanvixd`` and asserts the in-guest OpenSSL self-test prints
         ``PASS``.
 
-        Only standalone deployment mode runs a real test; other modes
-        require ``linuxd`` (Linux only) and are not yet wired up here.
+        Only standalone deployment mode is supported; multi-process and
+        single-process modes have been removed.  The guard below skips
+        any non-standalone mode defensively.
         """
         if self.config.deployment_mode != "standalone":
             log.info(

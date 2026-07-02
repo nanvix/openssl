@@ -72,27 +72,32 @@ ifneq ($(_BUILD),)
     $(error Cannot mix build and non-build targets. Build targets: $(_NANVIX_DOCKER_BUILD_GOALS))
   endif
 
-  ifeq ($(wildcard $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-gcc),)
+  ifeq ($(wildcard $(NANVIX_TOOLCHAIN)/bin/clang),)
     $(error Nanvix toolchain not found at $(NANVIX_TOOLCHAIN))
   endif
 endif
 
-CC := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-gcc
-AR := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ar
-RANLIB := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-ranlib
-CXX := $(NANVIX_TOOLCHAIN)/bin/i686-nanvix-g++
-# Since Nanvix 0.16.19, process startup (`_start`) lives in libnvx_crt0.a; it
-# drives `__nanvix_libc_start_main` in libposix.a. It must be linked first so
-# its strong `_start` overrides the toolchain's weak no-op stub (otherwise the
-# guest never reaches main and hangs). The wildcard keeps this a no-op on older
-# Nanvix releases that do not ship libnvx_crt0.a. libnvx_crt0.a and libposix.a
-# share some kcall objects, so allow multiple definitions to resolve the overlap.
-NANVIX_LDFLAGS := -T$(SYSROOT_PATH)/lib/user.ld -static -Wl,-z,noexecstack -Wl,--allow-multiple-definition
+# LLVM/Clang cross toolchain (ghcr.io/nanvix/llvm-project). The hosted
+# `i686-unknown-nanvix` target triple is selected explicitly via --target
+# (rather than relying on clang's built-in default) so the ABI is
+# unambiguous; llvm-ar/llvm-ranlib are drop-in ar/ranlib replacements.
+NANVIX_TARGET := i686-unknown-nanvix
+CC := $(NANVIX_TOOLCHAIN)/bin/clang
+AR := $(NANVIX_TOOLCHAIN)/bin/llvm-ar
+RANLIB := $(NANVIX_TOOLCHAIN)/bin/llvm-ranlib
+CXX := $(NANVIX_TOOLCHAIN)/bin/clang++
+# Process startup (`_do_start`/`_start`) lives in libnvx_crt0.a and drives
+# `__nanvix_libc_start_main`. It must be present so the linker script's
+# ENTRY(_do_start) resolves; `-nostartfiles` suppresses the toolchain's own
+# default crt0.o so the sysroot's start code is used instead. Nanvix 0.18.x
+# ships a single merged libc.a (C library + syscall backend; the former
+# libposix.a was folded into it) plus libm.a; both define a few overlapping
+# runtime symbols, so allow multiple definitions to resolve the overlap.
+NANVIX_LDFLAGS := -T$(SYSROOT_PATH)/lib/user.ld -static -nostartfiles -Wl,-z,noexecstack -Wl,--allow-multiple-definition
 NANVIX_LIBS := -Wl,--start-group \
-  $(wildcard $(SYSROOT_PATH)/lib/libnvx_crt0.a) \
-  $(SYSROOT_PATH)/lib/libposix.a \
-  $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libc.a \
-  $(NANVIX_TOOLCHAIN)/i686-nanvix/lib/libm.a \
+  $(SYSROOT_PATH)/lib/libnvx_crt0.a \
+  $(SYSROOT_PATH)/lib/libc.a \
+  $(SYSROOT_PATH)/lib/libm.a \
   -Wl,--end-group
 
 # Configure environment and options.
@@ -101,7 +106,7 @@ CONFIGURE_ENV = \
 	CC="$(CC)" \
 	CXX="$(CXX)" \
 	RANLIB="$(RANLIB)" \
-	CFLAGS="-I$(NANVIX_TOOLCHAIN)/usr/include/"
+	CFLAGS="--target=$(NANVIX_TARGET) -I$(SYSROOT_PATH)/include"
 
 # The 'nanvix' target is defined in Configurations/10-main.conf.
 CONFIGURE_OPTS = \
@@ -165,8 +170,9 @@ libcrypto.a libssl.a include/openssl/opensslv.h:
 	@echo "  FAIL: $@ not found; run 'build' first"; exit 1
 
 $(TEST_ELF): $(TEST_SRC) libcrypto.a libssl.a include/openssl/opensslv.h
-	$(CC) -O2 \
+	$(CC) --target=$(NANVIX_TARGET) -O2 \
 	  -I$(CURDIR)/include \
+	  -I$(SYSROOT_PATH)/include \
 	  $(TEST_SRC) \
 	  -L$(CURDIR) -lssl -lcrypto \
 	  $(NANVIX_LDFLAGS) $(NANVIX_LIBS) \

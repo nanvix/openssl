@@ -1,10 +1,10 @@
 [package]
 name = "openssl"
 version = "3.5.0"
-nanvix-version = "0.17.84"
+nanvix-version = "0.18.22"
 
 [builds]
 [builds.matrix]
 platforms = ["hyperlight", "microvm"]
-modes = ["multi-process", "single-process", "standalone"]
+modes = ["standalone"]
 memory = ["128mb", "256mb"]

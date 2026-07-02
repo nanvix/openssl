@@ -12,6 +12,7 @@ This document describes the port of [OpenSSL](https://www.openssl.org/) cryptogr
 |----------|-------|
 | **Base Version** | OpenSSL 3.5.0 |
 | **Target Platform** | Nanvix (i686) |
+| **Toolchain** | LLVM/Clang (`ghcr.io/nanvix/llvm-project`) |
 | **Build System** | GNU Make (wrapping OpenSSL Configure) |
 
 **What's included:**
@@ -68,18 +69,14 @@ You need the following to build OpenSSL for Nanvix:
 | Component | Description | Install |
 |-----------|-------------|---------|
 | **nanvix-zutil** | Build orchestration CLI | `pip install` from [GitHub Releases](https://github.com/nanvix/zutils/releases) |
-| **Nanvix Toolchain** | i686-nanvix cross-compiler | Docker image or native install |
+| **Nanvix Toolchain** | i686-nanvix LLVM/Clang cross toolchain (`ghcr.io/nanvix/llvm-project`) | Docker image or native install |
 | **Nanvix Sysroot** | System libraries and linker script | `nanvix-zutil setup` |
 
 ### Available Platform Configurations
 
 | Platform | Process Mode | Artifact Pattern |
 |----------|--------------|------------------|
-| hyperlight | multi-process | `hyperlight.*multi-process` |
-| hyperlight | single-process | `hyperlight.*single-process` |
 | hyperlight | standalone | `hyperlight.*standalone` |
-| microvm | single-process | `microvm.*single-process` |
-| microvm | multi-process | `microvm.*multi-process` |
 | microvm | standalone | `microvm.*standalone` |
 
 ### Downloading Nanvix
@@ -113,14 +110,14 @@ pip install "$WHEEL_URL"
 `./z build` is the supported entrypoint: it manages the Docker toolchain image, sysroot path translation, and host/container artefact copy-back. `Makefile.nanvix` can also be invoked directly, but the caller is responsible for providing a working native toolchain and a Nanvix sysroot:
 
 ```bash
-export NANVIX_TOOLCHAIN=/path/to/toolchain  # Contains: bin/i686-nanvix-gcc
-export NANVIX_HOME=/path/to/nanvix          # Contains: lib/user.ld, lib/libposix.a
+export NANVIX_TOOLCHAIN=/path/to/toolchain  # Contains: bin/clang, bin/llvm-ar
+export NANVIX_HOME=/path/to/nanvix          # Contains: lib/user.ld, lib/libc.a
 make -f Makefile.nanvix \
   PLATFORM=microvm PROCESS_MODE=standalone MEMORY_SIZE=128M \
   NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="$NANVIX_TOOLCHAIN" all
 ```
 
-> **Note:** The sysroot (`NANVIX_HOME`) must contain `lib/libposix.a` and `lib/user.ld` from a Nanvix build.
+> **Note:** The sysroot (`NANVIX_HOME`) must contain `lib/libc.a`, `lib/libm.a`, `lib/libnvx_crt0.a`, and `lib/user.ld` from a Nanvix build.
 
 ### Build Outputs
 
@@ -256,23 +253,16 @@ shared CI configuration and are not defined directly in this repository's workfl
 
 ### Build Matrix
 
-The CI runs on 12 platform × process-mode × memory-size configurations:
+The port is built and tested in **standalone** deployment mode only
+(multi-process and single-process modes are not supported), and CI
+covers the **256 MB** memory size only (128 MB support has been removed
+from CI). The CI runs on 2 platform configurations:
 
 | Platform | Process Mode | Memory Size | Linux Build & Test | Windows Test |
 |----------|--------------|-------------|-------------------|--------------|
-| hyperlight | multi-process | 128mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | multi-process | 256mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | single-process | 128mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | single-process | 256mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | standalone | 128mb | ✅ | ✅ |
 | hyperlight | standalone | 256mb | ✅ | ✅ |
-| microvm | multi-process | 128mb | ✅ | ❌ (requires linuxd) |
-| microvm | multi-process | 256mb | ✅ | ❌ (requires linuxd) |
-| microvm | single-process | 128mb | ✅ | ❌ (requires linuxd) |
-| microvm | single-process | 256mb | ✅ | ❌ (requires linuxd) |
-| microvm | standalone | 128mb | ✅ | ✅ |
 | microvm | standalone | 256mb | ✅ | ✅ |
 
-All configurations run in parallel with `fail-fast: false`, ensuring that all platforms are tested even if one fails. On Windows, only standalone mode is tested because single-process and multi-process modes require `linuxd`, which is Linux-only.
+All configurations run in parallel with `fail-fast: false`, ensuring that all platforms are tested even if one fails. Only standalone mode is supported; the multi-process and single-process modes (which require `linuxd`) have been removed, as has the 128 MB memory configuration.
 
 ---
