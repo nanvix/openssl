@@ -75,11 +75,7 @@ You need the following to build OpenSSL for Nanvix:
 
 | Platform | Process Mode | Artifact Pattern |
 |----------|--------------|------------------|
-| hyperlight | multi-process | `hyperlight.*multi-process` |
-| hyperlight | single-process | `hyperlight.*single-process` |
 | hyperlight | standalone | `hyperlight.*standalone` |
-| microvm | single-process | `microvm.*single-process` |
-| microvm | multi-process | `microvm.*multi-process` |
 | microvm | standalone | `microvm.*standalone` |
 
 ### Downloading Nanvix
@@ -256,23 +252,15 @@ shared CI configuration and are not defined directly in this repository's workfl
 
 ### Build Matrix
 
-The CI runs on 12 platform × process-mode × memory-size configurations:
+The CI runs on 4 platform × process-mode × memory-size configurations:
 
 | Platform | Process Mode | Memory Size | Linux Build & Test | Windows Test |
 |----------|--------------|-------------|-------------------|--------------|
-| hyperlight | multi-process | 128mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | multi-process | 256mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | single-process | 128mb | ✅ | ❌ (requires linuxd) |
-| hyperlight | single-process | 256mb | ✅ | ❌ (requires linuxd) |
 | hyperlight | standalone | 128mb | ✅ | ✅ |
 | hyperlight | standalone | 256mb | ✅ | ✅ |
-| microvm | multi-process | 128mb | ✅ | ❌ (requires linuxd) |
-| microvm | multi-process | 256mb | ✅ | ❌ (requires linuxd) |
-| microvm | single-process | 128mb | ✅ | ❌ (requires linuxd) |
-| microvm | single-process | 256mb | ✅ | ❌ (requires linuxd) |
 | microvm | standalone | 128mb | ✅ | ✅ |
 | microvm | standalone | 256mb | ✅ | ✅ |
 
-All configurations run in parallel with `fail-fast: false`, ensuring that all platforms are tested even if one fails. On Windows, only standalone mode is tested because single-process and multi-process modes require `linuxd`, which is Linux-only.
+All configurations run in parallel with `fail-fast: false`, ensuring that all platforms are tested even if one fails. Only the standalone deployment mode is supported, and it is tested on both Linux and Windows.
 
 ---
