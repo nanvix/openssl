@@ -329,5 +329,6 @@ doc-nits
 compile_commands.json
 
 # Nanvix
+openssl_nanvix_test.c
 openssl_nanvix_test.elf
 nanvixd_*.log
