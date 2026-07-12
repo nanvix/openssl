@@ -68,14 +68,13 @@ You need the following to build OpenSSL for Nanvix:
 | Component | Description | Install |
 |-----------|-------------|---------|
 | **nanvix-zutil** | Build orchestration CLI | `pip install` from [GitHub Releases](https://github.com/nanvix/zutils/releases) |
-| **Nanvix Toolchain** | i686-nanvix cross-compiler | Docker image or native install |
-| **Nanvix Sysroot** | System libraries and linker script | `nanvix-zutil setup` |
+| **Nanvix SDK** | Clang/LLVM cross-compilation SDK | Pinned Docker image or native install |
+| **Nanvix Sysroot** | Runtime binaries used by tests | `nanvix-zutil setup` |
 
 ### Available Platform Configurations
 
 | Platform | Process Mode | Artifact Pattern |
 |----------|--------------|------------------|
-| hyperlight | standalone | `hyperlight.*standalone` |
 | microvm | standalone | `microvm.*standalone` |
 
 ### Downloading Nanvix
@@ -99,24 +98,26 @@ WHEEL_URL=$(gh api repos/nanvix/zutils/releases/latest \
   --jq '.assets[] | select(.name | endswith(".whl")) | .browser_download_url')
 pip install "$WHEEL_URL"
 
-# Setup sysroot and build
-./z setup
+# Setup runtime sysroot and select the pinned SDK image
+./z setup --with-docker ghcr.io/nanvix/nanvix-sdk-c-clang@sha256:f61737cb0780e6a2058c6d0bdf8ae5562db18de437173b2bcbbe6973abd3689f
 ./z build
 ```
 
 ### Invoking Make Directly (Advanced)
 
-`./z build` is the supported entrypoint: it manages the Docker toolchain image, sysroot path translation, and host/container artefact copy-back. `Makefile.nanvix` can also be invoked directly, but the caller is responsible for providing a working native toolchain and a Nanvix sysroot:
+`./z build` is the supported entrypoint: it manages the Docker SDK image and host/container artefact copy-back. `Makefile.nanvix` can also be invoked directly, but the caller is responsible for providing the Nanvix SDK:
 
 ```bash
-export NANVIX_TOOLCHAIN=/path/to/toolchain  # Contains: bin/i686-nanvix-gcc
-export NANVIX_HOME=/path/to/nanvix          # Contains: lib/user.ld, lib/libposix.a
+export NANVIX_TOOLCHAIN=/path/to/sdk  # Contains: nanvix-sdk.json and bin/clang
 make -f Makefile.nanvix \
-  PLATFORM=microvm PROCESS_MODE=standalone MEMORY_SIZE=128M \
-  NANVIX_HOME="$NANVIX_HOME" NANVIX_TOOLCHAIN="$NANVIX_TOOLCHAIN" all
+  PLATFORM=microvm PROCESS_MODE=standalone MEMORY_SIZE=256mb \
+  NANVIX_TOOLCHAIN="$NANVIX_TOOLCHAIN" all
 ```
 
-> **Note:** The sysroot (`NANVIX_HOME`) must contain `lib/libposix.a` and `lib/user.ld` from a Nanvix build.
+The SDK Clang driver selects the Nanvix headers, libc, compiler runtime,
+startup objects, and linker script. The downloaded sysroot is runtime-only.
+SDK v0.20.0-sdk.1 also includes Perl and `FindBin`, so no derived OpenSSL
+builder image is needed.
 
 ### Build Outputs
 
@@ -160,8 +161,9 @@ The following changes were made to support Nanvix.
 | Change | Description |
 |--------|-------------|
 | New Makefile | Added `Makefile.nanvix` for Nanvix cross-compilation |
-| Cross-compilation | Driven by `PLATFORM`, `PROCESS_MODE`, `MEMORY_SIZE`, `NANVIX_HOME`, `NANVIX_TOOLCHAIN` |
+| Cross-compilation | Driven by `PLATFORM`, `PROCESS_MODE`, `MEMORY_SIZE`, `NANVIX_TOOLCHAIN` |
 | Docker support | Cross-compile container orchestrated by `z.py` (image cached, artefacts copied back) |
+| SDK toolchain | `/opt/nanvix/bin/clang`, `clang++`, `llvm-ar`, and `llvm-ranlib` |
 | Configure wrapper | Wraps `./Configure` with Nanvix cross-compilation settings |
 | Shared libraries | Disabled (`no-shared`) |
 | Applications | Disabled (`no-apps`) for library-only build |
@@ -252,15 +254,15 @@ shared CI configuration and are not defined directly in this repository's workfl
 
 ### Build Matrix
 
-The CI runs on 4 platform × process-mode × memory-size configurations:
+PR CI runs the microvm standalone configuration supported by the Nanvix
+0.20.0 runtime release:
 
 | Platform | Process Mode | Memory Size | Linux Build & Test | Windows Test |
 |----------|--------------|-------------|-------------------|--------------|
-| hyperlight | standalone | 128mb | ✅ | ✅ |
-| hyperlight | standalone | 256mb | ✅ | ✅ |
-| microvm | standalone | 128mb | ✅ | ✅ |
 | microvm | standalone | 256mb | ✅ | ✅ |
 
-All configurations run in parallel with `fail-fast: false`, ensuring that all platforms are tested even if one fails. Only the standalone deployment mode is supported, and it is tested on both Linux and Windows.
+Nanvix 0.20.0 publishes only microvm runtime assets and does not publish a
+standalone 128mb asset, so the SDK migration narrows the matrix to microvm at
+256mb. All existing Linux and Windows test types remain enabled.
 
 ---

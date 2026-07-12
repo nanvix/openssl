@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -44,7 +43,6 @@ _EXIT_BUILD: int = EXIT_BUILD_FAILURE
 _EXIT_DEP: int = EXIT_MISSING_DEP
 
 # Makefile variable names (build-system-specific).
-_MAKE_VAR_HOME = "NANVIX_HOME"
 _MAKE_VAR_TOOLCHAIN = "NANVIX_TOOLCHAIN"
 _MAKE_VAR_PLATFORM = "PLATFORM"
 _MAKE_VAR_PROCESS_MODE = "PROCESS_MODE"
@@ -55,8 +53,11 @@ _MAKE_VAR_INSTALL_PREFIX = "INSTALL_PREFIX"
 # Use /sysroot so that release tarballs don't contain ephemeral runner paths.
 _DEFAULT_INSTALL_PREFIX = "/sysroot"
 
-# Docker image for cross-compilation (must match Makefile.nanvix default).
-_DOCKER_IMAGE = "ghcr.io/nanvix/toolchain-gcc:sha-34a3641"
+# Docker image for cross-compilation (Nanvix SDK v0.20.0-sdk.1).
+_DOCKER_IMAGE = (
+    "ghcr.io/nanvix/nanvix-sdk-c-clang"
+    "@sha256:f61737cb0780e6a2058c6d0bdf8ae5562db18de437173b2bcbbe6973abd3689f"
+)
 
 # Test binary name produced by the Makefile.
 _TEST_ELF = "openssl_nanvix_test.elf"
@@ -112,6 +113,19 @@ IS_WINDOWS = sys.platform == "win32"
 class OpenSSLBuild(ZScript):
     """Build script for nanvix/openssl."""
 
+    # Build-time headers, libraries, startup objects, and linker scripts come
+    # from the SDK. The downloaded sysroot is used only to run tests.
+    SYSROOT_REQUIRED_FILES = (
+        "bin/nanvixd.elf",
+        "bin/kernel.elf",
+        "bin/mkramfs.elf",
+    )
+    SYSROOT_REQUIRED_FILES_WINDOWS = (
+        "bin/nanvixd.exe",
+        "bin/kernel.elf",
+        "bin/mkramfs.exe",
+    )
+
     def docker_image(self) -> str:
         """Return the Docker image for cross-compilation."""
         return _DOCKER_IMAGE
@@ -148,58 +162,6 @@ class OpenSSLBuild(ZScript):
         )
         return staged
 
-    def _ensure_docker_perl(self) -> None:
-        """Ensure the Docker image has Perl with FindBin (needed by Configure).
-
-        The base toolchain image ships only ``perl-base``.  OpenSSL's
-        ``./Configure`` requires the full ``perl`` package (``FindBin``).
-        When Docker is active, this method builds a thin derived image
-        that adds ``perl`` on top of the base image, then switches
-        ``self.docker`` to use it.  The derived image is cached locally
-        so subsequent calls are instant.
-        """
-        if not self.docker:  # type: ignore[reportUnknownMemberType]
-            return
-
-        base: str = self.docker.image  # type: ignore[reportUnknownMemberType]
-        derived = f"{base}-openssl"
-
-        # Fast path: derived image already built from a previous run.
-        if (
-            subprocess.run(
-                ["docker", "image", "inspect", derived],
-                capture_output=True,
-            ).returncode
-            == 0
-        ):
-            self.docker = self.docker_config(derived)
-            return
-
-        # Check whether the base image already ships FindBin.
-        if (
-            subprocess.run(
-                ["docker", "run", "--rm", base, "perl", "-MFindBin", "-e1"],
-                capture_output=True,
-            ).returncode
-            == 0
-        ):
-            return
-
-        # Build a derived image that adds perl.
-        log.info("Building derived Docker image with Perl (required by OpenSSL)...")
-        subprocess.run(
-            ["docker", "build", "-t", derived, "-"],
-            input=(
-                f"FROM {base}\n"
-                "RUN apt-get update -qq && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq perl && "
-                "rm -rf /var/lib/apt/lists/*\n"
-            ),
-            text=True,
-            check=True,
-        )
-        self.docker = self.docker_config(derived)
-
     def _make_args(
         self,
         *targets: str,
@@ -207,23 +169,10 @@ class OpenSSLBuild(ZScript):
     ) -> list[str]:
         """Build the common make argument list.
 
-        Path translation for ``NANVIX_HOME`` is applied when running
-        under Docker (``self.docker`` is set); otherwise the raw host
-        path is used.  ``NANVIX_TOOLCHAIN`` is always the in-container
-        toolchain path because the only goals that dereference it run
-        under Docker.
+        ``NANVIX_TOOLCHAIN`` is always the in-container SDK path because
+        the only goals that dereference it run under Docker.
         """
-        sysroot = self.config.get(CFG_SYSROOT, "")
-        if not sysroot:
-            log.fatal(
-                f"{CFG_SYSROOT} is not set.",
-                code=_EXIT_DEP,
-                hint="Run `./z setup` first to download the sysroot.",
-            )
         toolchain_p = str(TOOLCHAIN_CONTAINER_PATH)
-        sysroot_p = (
-            self.docker.translate_path(Path(sysroot)) if self.docker else Path(sysroot)
-        )
 
         def translate(p: Path):
             return self.docker.translate_path(p) if self.docker else p
@@ -232,7 +181,6 @@ class OpenSSLBuild(ZScript):
             "make",
             "-f",
             "Makefile.nanvix",
-            f"{_MAKE_VAR_HOME}={sysroot_p}",
             f"{_MAKE_VAR_TOOLCHAIN}={toolchain_p}",
         ]
 
@@ -266,7 +214,6 @@ class OpenSSLBuild(ZScript):
 
     def build(self) -> None:
         """Cross-compile libcrypto.a, libssl.a, and test ELF (in Docker)."""
-        self._ensure_docker_perl()
         # Build libraries and test binary in one pass.
         run(
             *self._make_args("all", _TEST_ELF),
@@ -374,7 +321,11 @@ class OpenSSLBuild(ZScript):
 
         initrd = make_initrd(self, elf_src, test_out())
         try:
-            with tempfile.TemporaryDirectory(prefix="openssl_test_") as tmp:
+            test_out().mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="openssl_test_",
+                dir=test_out(),
+            ) as tmp:
                 tmp_path = Path(tmp)
                 ramfs_dir = tmp_path / "ramfs"
                 ramfs_dir.mkdir()
