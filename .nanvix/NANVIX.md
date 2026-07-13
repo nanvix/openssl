@@ -98,8 +98,8 @@ WHEEL_URL=$(gh api repos/nanvix/zutils/releases/latest \
   --jq '.assets[] | select(.name | endswith(".whl")) | .browser_download_url')
 pip install "$WHEEL_URL"
 
-# Setup runtime sysroot and select the pinned SDK image
-./z setup --with-docker ghcr.io/nanvix/nanvix-sdk-c-clang@sha256:f61737cb0780e6a2058c6d0bdf8ae5562db18de437173b2bcbbe6973abd3689f
+# Setup the runtime sysroot and manifest-pinned SDK image.
+./z setup
 ./z build
 ```
 
@@ -116,7 +116,7 @@ make -f Makefile.nanvix \
 
 The SDK Clang driver selects the Nanvix headers, libc, compiler runtime,
 startup objects, and linker script. The downloaded sysroot is runtime-only.
-SDK v0.20.0-sdk.1 also includes Perl and `FindBin`, so no derived OpenSSL
+The manifest-pinned SDK also includes Perl and `FindBin`, so no derived OpenSSL
 builder image is needed.
 
 ### Build Outputs

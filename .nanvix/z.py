@@ -53,12 +53,6 @@ _MAKE_VAR_INSTALL_PREFIX = "INSTALL_PREFIX"
 # Use /sysroot so that release tarballs don't contain ephemeral runner paths.
 _DEFAULT_INSTALL_PREFIX = "/sysroot"
 
-# Docker image for cross-compilation (Nanvix SDK v0.20.0-sdk.1).
-_DOCKER_IMAGE = (
-    "ghcr.io/nanvix/nanvix-sdk-c-clang"
-    "@sha256:f61737cb0780e6a2058c6d0bdf8ae5562db18de437173b2bcbbe6973abd3689f"
-)
-
 # Test binary name produced by the Makefile.
 _TEST_ELF = "openssl_nanvix_test.elf"
 
@@ -125,10 +119,6 @@ class OpenSSLBuild(ZScript):
         "bin/kernel.elf",
         "bin/mkramfs.exe",
     )
-
-    def docker_image(self) -> str:
-        """Return the Docker image for cross-compilation."""
-        return _DOCKER_IMAGE
 
     def docker_config(self, image: str) -> DockerConfig:
         """Extend the default Docker config with build outputs.
