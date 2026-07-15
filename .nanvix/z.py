@@ -30,9 +30,8 @@ from nanvix_zutil import (
     run,
 )
 from nanvix_zutil.paths import (
+    dev_out,
     dist_dir,
-    include_out,
-    lib_out,
     nanvix_root,
     out_dir,
     repo_root,
@@ -142,12 +141,12 @@ class OpenSSLBuild(ZScript):
         """
         root = repo_root()
         staged: list[str] = [
-            str((lib_out() / "libcrypto.a").relative_to(root)),
-            str((lib_out() / "libssl.a").relative_to(root)),
+            str((dev_out() / "lib" / "libcrypto.a").relative_to(root)),
+            str((dev_out() / "lib" / "libssl.a").relative_to(root)),
             str((test_out() / _TEST_ELF).relative_to(root)),
         ]
         staged.extend(
-            str((include_out() / "openssl" / h).relative_to(root))
+            str((dev_out() / "include" / "openssl" / h).relative_to(root))
             for h in _GENERATED_HEADERS
         )
         return staged
@@ -182,8 +181,8 @@ class OpenSSLBuild(ZScript):
                 f"NANVIX_ROOT={translate(nanvix_root())}",
                 f"OUT_DIR={translate(out_dir())}",
                 f"DIST_DIR={translate(dist_dir())}",
-                f"LIB_OUT={translate(lib_out())}",
-                f"INCLUDE_OUT={translate(include_out())}",
+                f"LIB_OUT={translate(dev_out() / 'lib')}",
+                f"INCLUDE_OUT={translate(dev_out() / 'include')}",
                 f"TEST_OUT={translate(test_out())}",
             ]
         )
