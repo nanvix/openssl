@@ -308,7 +308,7 @@ class OpenSSLBuild(ZScript):
         log.info("=== openssl functional tests ===")
         log.info(f"  Running {_TEST_ELF} via nanvixd standalone...")
 
-        initrd = make_initrd(self, elf_src, test_out())
+        initrd = make_initrd(elf_src, test_out())
         try:
             test_out().mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(
