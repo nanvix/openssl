@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 import tempfile
 from pathlib import Path
@@ -120,22 +119,6 @@ class OpenSSLBuild(ZScript):
         "bin/mkramfs.exe",
     )
 
-    def docker_config(self, image: str) -> DockerConfig:
-        """Extend the default Docker config with build outputs.
-
-        On Windows the build runs in a container-local directory via
-        :meth:`DockerConfig.build_windows_run_cmd` to avoid VirtioFS I/O
-        penalties; ``output_files`` tells that helper which artefacts to
-        copy back into the mounted workspace so host-side test code can
-        find them. The list is harmless on Linux (where the workspace
-        itself is the build directory).
-        """
-        cfg = super().docker_config(image)
-        return dataclasses.replace(
-            cfg,
-            output_files=list(_BUILD_OUTPUTS) + self._staged_output_files(),
-        )
-
     def _staged_output_files(self) -> list[str]:
         """Return install-staged artifact paths (relative to repo_root())
         so Windows tar-copy mode also copies them back to the host.
@@ -154,6 +137,7 @@ class OpenSSLBuild(ZScript):
 
     def _make_args(
         self,
+        docker: DockerConfig | None,
         *targets: str,
         with_install_prefix: bool = True,
     ) -> list[str]:
@@ -165,7 +149,7 @@ class OpenSSLBuild(ZScript):
         toolchain_p = str(TOOLCHAIN_CONTAINER_PATH)
 
         def translate(p: Path):
-            return translate_path(self.docker.mounts, p) if self.docker else p
+            return translate_path(docker.mounts, p) if docker else p
 
         args = [
             "make",
@@ -202,13 +186,16 @@ class OpenSSLBuild(ZScript):
         """Download the Nanvix sysroot."""
         return super().setup()
 
-    def build(self) -> None:
+    def build(self, docker: DockerConfig) -> None:
         """Cross-compile libcrypto.a, libssl.a, and test ELF (in Docker)."""
+        # output_files copies artefacts back into the mounted workspace on
+        # Windows tar-copy builds; harmless on Linux.
+        docker.output_files = list(_BUILD_OUTPUTS) + self._staged_output_files()
         # Build libraries and test binary in one pass.
         run(
-            *self._make_args("all", _TEST_ELF),
+            *self._make_args(docker, "all", _TEST_ELF),
             cwd=repo_root(),
-            docker=self.docker,
+            docker=docker,
         )
 
     def test(self) -> None:
